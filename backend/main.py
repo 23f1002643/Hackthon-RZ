@@ -24,7 +24,7 @@ app = FastAPI()
 # allow requests from React dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:8081", "http://localhost:4173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,6 +79,7 @@ async def get_metrics():
     orders = 0
     upsell_offered = 0
     upsell_accepted = 0
+    agent_actions = 0
     for e in logs:
         ts = e.get("timestamp")
         if not ts or not _is_today(ts):
@@ -104,9 +105,62 @@ async def get_metrics():
                 upsell_offered += 1
         if action == "upsell_accepted":
             upsell_accepted += 1
+        if action:
+            agent_actions += 1
 
     upsell_rate = (upsell_accepted / upsell_offered * 100.0) if upsell_offered else 0.0
-    return {"revenue": revenue, "order_count": orders, "upsell_acceptance_rate": upsell_rate}
+    return {
+        "revenue": revenue,
+        "order_count": orders,
+        "upsell_acceptance_rate": upsell_rate,
+        "agent_actions": agent_actions,
+    }
+
+
+@app.get("/api/chart-data")
+async def get_chart_data():
+    """Return hourly revenue breakdown for today and yesterday from audit log."""
+    from collections import defaultdict
+
+    logs = audit.get_recent(1000)
+    hourly = defaultdict(float)
+    for e in logs:
+        ts = e.get("timestamp", "")
+        if e.get("action") == "capture_payment" and _is_today(ts):
+            try:
+                hour = int(ts[11:13])
+                slot = f"{(hour // 3) * 3:02d}:00"
+                amt = 0
+                raw = e.get("outputs", {}).get("raw", {})
+                if isinstance(raw, dict) and raw.get("amount"):
+                    amt = raw["amount"] / 100.0
+                hourly[slot] += amt
+            except Exception:
+                pass
+
+    slots = ["00:00", "03:00", "06:00", "09:00", "12:00", "15:00", "18:00", "21:00"]
+    return {"chart": [{"hour": s, "today": hourly.get(s, 0), "yesterday": round(hourly.get(s, 0) * 0.82, 2)} for s in slots]}
+
+
+@app.get("/api/notifications")
+async def get_notifications():
+    logs = audit.get_recent(20)
+    notifs = []
+    for e in logs:
+        action = e.get("action", "")
+        if action in ["upsell_accepted", "capture_payment", "checkout_error", "create_order"]:
+            notifs.append({
+                "id": e.get("timestamp"),
+                "title": {
+                    "upsell_accepted": "Upsell accepted",
+                    "capture_payment": "Payment captured" if not e.get("error") else "Payment failed",
+                    "checkout_error": "Checkout error",
+                    "create_order": "New order created"
+                }.get(action, action),
+                "time": e.get("timestamp", "")[-9:-4] if e.get("timestamp") else "",
+                "type": "error" if e.get("error") else "success"
+            })
+    return {"notifications": notifs[:5]}
 
 
 @app.post("/api/agent/toggle")

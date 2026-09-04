@@ -12,6 +12,18 @@ export async function fetchMetrics() {
   return res.json();
 }
 
+export async function fetchChartData() {
+  const res = await fetch(`${BASE}/api/chart-data`);
+  if (!res.ok) throw new Error('Failed to fetch chart data');
+  return res.json();
+}
+
+export async function fetchNotifications() {
+  const res = await fetch(`${BASE}/api/notifications`);
+  if (!res.ok) throw new Error('Failed to fetch notifications');
+  return res.json();
+}
+
 export async function postCheckout(cart: any[], customer: any) {
   const res = await fetch(`${BASE}/api/checkout`, {
     method: 'POST',
@@ -35,4 +47,4 @@ export async function toggleAgent(action: 'pause' | 'resume') {
   return res.json();
 }
 
-export default { fetchAuditLogs, fetchMetrics, postCheckout, toggleAgent };
+export default { fetchAuditLogs, fetchMetrics, fetchChartData, fetchNotifications, postCheckout, toggleAgent };

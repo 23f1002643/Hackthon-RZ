@@ -9,11 +9,56 @@ Provides node functions:
 
 Also exposes `run_full_flow` to run the end-to-end checkout simulation.
 """
+import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
+from openai import OpenAI
+
 from . import razorpay_tools as rz, audit
+
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+_nvidia_client = OpenAI(
+    base_url="https://integrate.api.nvidia.com/v1",
+    api_key=os.getenv("NVIDIA_API_KEY"),
+)
+
+
+def _llm_analyze(cart_items, total) -> dict:
+    """Call NVIDIA LLM to analyze cart and generate upsell suggestion with reason."""
+    cart_str = ", ".join([f"{i.get('name')} x{i.get('qty', 1)} @ ₹{i.get('price')}" for i in cart_items])
+    prompt = f"""You are an AI commerce agent for Zephyr Apparel, an ethnic wear brand.
+
+Cart: {cart_str}
+Cart Total: ₹{total}
+
+Your job:
+1. Suggest ONE specific product to upsell (must be relevant to the cart)
+2. Give a short reason (1 sentence, data-driven, mention cart context)
+3. Suggest a price between ₹199-₹1499
+
+Respond ONLY in this JSON format (no markdown, no extra text):
+{{"item": "product name", "price": 599, "reason": "one sentence why this fits the cart"}}"""
+
+    try:
+        resp = _nvidia_client.chat.completions.create(
+            model="meta/llama-3.1-70b-instruct",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=150,
+            temperature=0.4,
+        )
+        text = resp.choices[0].message.content.strip()
+        return json.loads(text)
+    except Exception as e:
+        return {
+            "item": "handcrafted dupatta",
+            "price": 399,
+            "reason": f"Complementary ethnic accessory (fallback: {str(e)[:40]})",
+        }
 
 
 @dataclass
@@ -50,22 +95,11 @@ class CommerceAgent:
 
     def analyze_cart(self, cart_items: List[Dict[str, Any]]) -> Dict[str, Any]:
         self.state.cart = cart_items
-        total = 0.0
-        for it in cart_items:
-            price = float(it.get("price", 0))
-            qty = int(it.get("qty", 1))
-            total += price * qty
+        total = sum(float(i.get("price", 0)) * int(i.get("qty", 1)) for i in cart_items)
 
-        suggestion = None
-        reason = ""
-        # naive suggestion: if any kurta in cart, suggest matching ethnic wear
-        names = ",".join([str(it.get("name", "")) for it in cart_items])
-        if "kurta" in names.lower() or "ethnic" in names.lower():
-            suggestion = {"item": "matching dupatta", "price": 299.0}
-            reason = "Complementary accessory to increase average order value"
-        else:
-            suggestion = {"item": "stylish accessory", "price": 199.0}
-            reason = "Generic accessory upsell"
+        llm_result = _llm_analyze(cart_items, total)
+        suggestion = {"item": llm_result.get("item"), "price": float(llm_result.get("price", 399))}
+        reason = llm_result.get("reason", "AI-generated upsell recommendation")
 
         outputs = {"total": total, "suggestion": suggestion}
         return self.log_action("analyze_cart", {"cart": cart_items}, outputs, reason=reason)

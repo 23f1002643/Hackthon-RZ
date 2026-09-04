@@ -41,7 +41,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-import { fetchAuditLogs, fetchMetrics, postCheckout, toggleAgent } from "@/lib/api";
+import { fetchAuditLogs, fetchChartData, fetchMetrics, fetchNotifications, postCheckout, toggleAgent } from "@/lib/api";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
@@ -103,6 +103,8 @@ function Dashboard() {
   const [showSearch, setShowSearch] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [clock, setClock] = useState("09:42:18");
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [showNotifs, setShowNotifs] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("light", lightMode);
@@ -111,6 +113,13 @@ function Dashboard() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [lightMode]);
+
+  useEffect(() => {
+    const load = () => fetchNotifications().then((d) => setNotifications(d.notifications || [])).catch(() => {});
+    load();
+    const id = setInterval(load, 10000);
+    return () => clearInterval(id);
+  }, []);
 
   async function runSimulation() {
     try {
@@ -169,10 +178,35 @@ function Dashboard() {
                 <Search />
               </Button>
             )}
-            <Button variant="ghost" size="icon" className="relative text-muted-foreground" title="Notifications" aria-label="Notifications">
-              <Bell />
-              <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary" />
-            </Button>
+            <div className="relative">
+              <Button
+                variant="ghost" size="icon"
+                className="relative text-muted-foreground"
+                onClick={() => setShowNotifs((v) => !v)}
+              >
+                <Bell />
+                {notifications.length > 0 && (
+                  <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary live-dot" />
+                )}
+              </Button>
+              {showNotifs && (
+                <div className="absolute right-0 top-10 z-50 w-72 overflow-hidden rounded-md border border-border bg-card shadow-[var(--shadow-panel)]">
+                  <div className="border-b border-border px-4 py-3 text-xs font-medium">Notifications</div>
+                  {notifications.length === 0
+                    ? <div className="px-4 py-6 text-center text-xs text-muted-foreground">No recent activity</div>
+                    : notifications.map((n, i) => (
+                        <div key={i} className="flex items-start gap-3 border-b border-border px-4 py-3 last:border-0 hover:bg-muted/30">
+                          <span className={`mt-1 size-1.5 shrink-0 rounded-full ${n.type === 'error' ? 'bg-destructive' : 'bg-success'}`} />
+                          <div>
+                            <p className="text-xs font-medium">{n.title}</p>
+                            <p className="text-[11px] text-muted-foreground tabular-nums">{n.time}</p>
+                          </div>
+                        </div>
+                      ))
+                  }
+                </div>
+              )}
+            </div>
             <Button
               variant="ghost"
               size="icon"
@@ -216,7 +250,7 @@ function Dashboard() {
           {view === "overview" && <Overview />}
           {view === "agent" && <AgentControl live={agentLive} onToggle={() => setConfirmOpen(true)} />}
           {view === "checkout" && <CheckoutSimulation />}
-          {view === "audit" && <AuditTrail />}
+          {view === "audit" && <AuditTrail searchTerm={searchTerm} />}
         </main>
       </div>
 
@@ -306,7 +340,7 @@ function AgentStatusButton({ live, onClick }: { live: boolean; onClick: () => vo
 }
 
 function Overview() {
-  const [metrics, setMetrics] = useState<any>({ revenue: 0, order_count: 0, upsell_acceptance_rate: 0 });
+  const [metrics, setMetrics] = useState<any>({ revenue: 0, order_count: 0, upsell_acceptance_rate: 0, agent_actions: 0 });
 
   useEffect(() => {
     let mounted = true;
@@ -328,11 +362,11 @@ function Overview() {
         <Kpi label="Revenue today" value={`₹${metrics.revenue}`} change="+18.4%" detail="vs yesterday" icon={CircleDollarSign} positive />
         <Kpi label="Orders" value={`${metrics.order_count}`} change="+12.8%" detail="vs yesterday" icon={Package} positive />
         <Kpi label="Upsell accepted" value={`${Math.round(metrics.upsell_acceptance_rate)}`} change="17.8%" detail="of eligible orders" icon={Target} positive />
-        <Kpi label="Agent actions" value="1,284" change="99.2%" detail="within policy" icon={Activity} positive />
+        <Kpi label="Agent actions" value={String(metrics.agent_actions ?? 0)} change="99.2%" detail="within policy" icon={Activity} positive />
       </section>
       <section className="grid gap-5 xl:grid-cols-[minmax(260px,0.88fr)_minmax(440px,1.5fr)_minmax(300px,1fr)]">
         <ActivityFeed />
-        <RevenueChart />
+        <RevenueChart totalRevenue={metrics.revenue} />
         <AuditPreview />
       </section>
     </>
@@ -356,11 +390,11 @@ function Kpi({ label, value, change, detail, icon: Icon, positive }: { label: st
   );
 }
 
-function PanelHeader({ icon: Icon, title, meta, action }: { icon: typeof Activity; title: string; meta?: string; action?: string }) {
+function PanelHeader({ icon: Icon, title, meta, action, onAction }: { icon: typeof Activity; title: string; meta?: string; action?: string; onAction?: () => void }) {
   return (
     <div className="flex items-center justify-between border-b border-border px-4 py-3.5">
       <div className="flex items-center gap-2.5"><Icon className="size-4 text-primary" /><h2 className="text-sm font-medium">{title}</h2>{meta && <span className="text-xs text-muted-foreground">{meta}</span>}</div>
-      {action && <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground">{action}<ChevronRight className="size-3" /></Button>}
+      {action && <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground" onClick={onAction}>{action}<ChevronRight className="size-3" /></Button>}
     </div>
   );
 }
@@ -407,14 +441,20 @@ function ActivityRow({ time, action, detail, outcome, value }: typeof actions[nu
   );
 }
 
-function RevenueChart() {
+function RevenueChart({ totalRevenue = 0 }: { totalRevenue?: number }) {
+  const [liveChartData, setLiveChartData] = useState(chartData);
+
+  useEffect(() => {
+    fetchChartData().then((d) => { if (d.chart?.length) setLiveChartData(d.chart); }).catch(() => {});
+  }, []);
+
   return (
     <div className="overflow-hidden border border-border bg-card shadow-[var(--shadow-panel)]">
       <PanelHeader icon={BarChart3} title="Revenue performance" meta="Today · INR" action="Details" />
       <div className="p-4 pb-2">
-        <div className="flex items-end justify-between"><div><p className="text-3xl font-semibold tabular-nums tracking-tight">₹1,84,620</p><p className="mt-1 text-xs text-success">+18.4% <span className="text-muted-foreground">vs yesterday</span></p></div><div className="flex gap-4 text-[11px] text-muted-foreground"><span className="flex items-center gap-1.5"><i className="size-1.5 rounded-full bg-primary" />Today</span><span className="flex items-center gap-1.5"><i className="size-1.5 rounded-full bg-muted-foreground/50" />Yesterday</span></div></div>
+        <div className="flex items-end justify-between"><div><p className="text-3xl font-semibold tabular-nums tracking-tight gradient-text-primary">₹{totalRevenue.toLocaleString('en-IN')}</p><p className="mt-1 text-xs text-success">+18.4% <span className="text-muted-foreground">vs yesterday</span></p></div><div className="flex gap-4 text-[11px] text-muted-foreground"><span className="flex items-center gap-1.5"><i className="size-1.5 rounded-full bg-primary" />Today</span><span className="flex items-center gap-1.5"><i className="size-1.5 rounded-full bg-muted-foreground/50" />Yesterday</span></div></div>
         <div className="mt-5 h-[250px] w-full">
-          <ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 10, right: 4, bottom: 0, left: -18 }}>
+          <ResponsiveContainer width="100%" height="100%"><LineChart data={liveChartData} margin={{ top: 10, right: 4, bottom: 0, left: -18 }}>
             <XAxis dataKey="hour" axisLine={false} tickLine={false} tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }} />
             <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }} tickFormatter={(value) => `₹${value}k`} />
             <Tooltip contentStyle={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "4px", color: "var(--color-foreground)", fontSize: "12px" }} formatter={(value: number, name: string) => [`₹${value}k`, name === "today" ? "Today" : "Yesterday"]} />
@@ -436,10 +476,16 @@ function AuditPreview() {
 
 function AuditRow({ time, label, reason, tone }: typeof auditEntries[number]) {
   const toneClass =
-    tone === "success" ? "bg-success-gradient shadow-glow-success" :
+    tone === "success" ? "bg-success shadow-glow-success" :
     tone === "warning" ? "bg-warning" :
       "bg-destructive";
-  return <div className="flex gap-3 px-4 py-3.5"><span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${toneClass}`} /><div className="min-w-0"><div className="flex items-center justify-between gap-2"><p className="text-xs font-medium">{label}</p><span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{time}</span></div><p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{reason}</p></div></div>;
+
+  const labelClass =
+    tone === "success" ? "text-success" :
+    tone === "warning" ? "text-warning" :
+      "text-destructive";
+
+  return <div className="flex gap-3 px-4 py-3.5"><span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${toneClass}`} /><div className="min-w-0"><div className="flex items-center justify-between gap-2"><p className={`text-xs font-medium ${labelClass}`}>{label}</p><span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{time}</span></div><p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{reason}</p></div></div>;
 }
 
 function AgentControl({ live, onToggle }: { live: boolean; onToggle: () => void }) {
@@ -466,4 +512,33 @@ function PaymentTracker({ step, onStep }: { step: number; onStep: (step: number)
   return <div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={ReceiptIndianRupee} title="Payment status" meta="₹5,297" /><div className="p-5"><div className="space-y-0">{steps.map((item, index) => { const Icon = item.icon; const complete = index < step; const current = index === step; return <div key={item.label} className="flex gap-3"><div className="flex flex-col items-center"><div className={`flex size-8 items-center justify-center rounded-full border ${complete ? "border-success bg-success text-background" : current ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>{complete ? <Check className="size-4" /> : <Icon className="size-4" />}</div>{index < steps.length - 1 && <div className={`my-1 h-8 w-px ${complete ? "bg-success" : "bg-border"}`} />}</div><div className="pt-1"><p className={`text-sm font-medium ${current ? "text-foreground" : complete ? "text-success" : "text-muted-foreground"}`}>{item.label}</p><p className="mt-1 text-xs text-muted-foreground">{index === 0 ? "Awaiting customer confirmation" : index === 1 ? "Razorpay payment captured" : "Decision added to audit trail"}</p></div></div>; })}</div><Button variant="outline" className="mt-6 w-full" disabled={step >= 3} onClick={() => onStep(Math.min(step + 1, 3))}>{step === 1 ? "Capture payment" : step === 2 ? "Log transaction" : "Transaction complete"}{step < 3 && <ChevronRight />}</Button><p className="mt-3 text-center text-[11px] text-muted-foreground">Test mode · No real payment will be processed</p></div></div>;
 }
 
-function AuditTrail() { return <div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={FileClock} title="All agent decisions" meta="1,284 events today" action="Export log" /><div className="hidden grid-cols-[120px_180px_1fr_120px] gap-4 border-b border-border bg-muted/30 px-5 py-3 text-[11px] font-medium text-muted-foreground md:grid"><span>Timestamp</span><span>Decision</span><span>Reason</span><span>Outcome</span></div><div className="divide-y divide-border">{[...auditEntries, { time: "09:28:44", label: "Bundle surfaced", reason: "Three complementary categories detected with 68% purchase affinity.", tone: "success" as const }, { time: "09:22:09", label: "Shipping waived", reason: "Cart total crossed the free delivery threshold for the active region.", tone: "success" as const }].map((entry) => <div key={entry.time} className="grid gap-2 px-5 py-4 md:grid-cols-[120px_180px_1fr_120px] md:items-center md:gap-4"><span className="text-xs tabular-nums text-muted-foreground">{entry.time}</span><span className="text-sm font-medium">{entry.label}</span><span className="text-xs leading-relaxed text-muted-foreground">{entry.reason}</span><span className="flex items-center gap-1.5 text-xs text-success"><Check className="size-3.5" /> Recorded</span></div>)}</div></div>; }
+function AuditTrail({ searchTerm = "" }: { searchTerm?: string }) {
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetchAuditLogs().then((d) => setAuditLogs(d.logs || [])).catch(() => {});
+  }, []);
+
+  const displayLogs = (auditLogs.length > 0 ? auditLogs : [...auditEntries]).filter((e) =>
+    !searchTerm ||
+    e.label?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    e.action?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    e.reason?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  function handleExport() {
+    const data = displayLogs.map((e) => ({
+      timestamp: e.time || e.timestamp || '',
+      action: e.label || e.action || '',
+      reason: e.reason || '',
+      outcome: e.error ? 'failed' : 'success'
+    }));
+    const csv = ["Timestamp,Action,Reason,Outcome", ...data.map((r) => `${r.timestamp},\"${r.action}\",\"${r.reason}\",${r.outcome}`)].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `audit-log-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  }
+
+  return <div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={FileClock} title="All agent decisions" meta={`${displayLogs.length} events today`} action="Export log" onAction={handleExport} /><div className="hidden grid-cols-[120px_180px_1fr_120px] gap-4 border-b border-border bg-muted/30 px-5 py-3 text-[11px] font-medium text-muted-foreground md:grid"><span>Timestamp</span><span>Decision</span><span>Reason</span><span>Outcome</span></div><div className="divide-y divide-border">{displayLogs.map((entry, i) => <div key={i} className="grid gap-2 px-5 py-4 md:grid-cols-[120px_180px_1fr_120px] md:items-center md:gap-4"><span className="text-xs tabular-nums text-muted-foreground">{entry.time || entry.timestamp?.split('T')[1]?.slice(0, 8) || ''}</span><span className="text-sm font-medium">{entry.label || entry.action || ''}</span><span className="text-xs leading-relaxed text-muted-foreground">{entry.reason || ''}</span><span className="flex items-center gap-1.5 text-xs text-success"><Check className="size-3.5" /> Recorded</span></div>)}</div></div>; }
