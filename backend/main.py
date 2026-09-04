@@ -9,8 +9,11 @@ Endpoints:
 Run with:
     uvicorn backend.main:app --reload --port 8000
 """
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import datetime
 from typing import Any, Dict
+
+from zoneinfo import ZoneInfo
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +27,14 @@ app = FastAPI()
 # allow requests from React dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:8081", "http://localhost:4173"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "http://localhost:8081",
+        "http://localhost:4173",
+        "http://127.0.0.1:8080",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,6 +42,7 @@ app.add_middleware(
 
 # in-memory agent toggling
 AGENT_PAUSED = False
+APP_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 @app.get("/")
@@ -60,46 +71,88 @@ async def checkout(payload: Dict[str, Any] = Body(...)):
 
 @app.get("/api/audit-log")
 async def get_audit():
-    return {"logs": audit.get_recent(50)}
+    logs = [entry for entry in audit.get_recent(200) if _is_dashboard_event(entry)]
+    return {"logs": list(reversed(logs[-50:]))}
+
+
+def _parse_timestamp(ts: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 def _is_today(ts: str) -> bool:
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        return dt.date() == now.date()
-    except Exception:
+    dt = _parse_timestamp(ts)
+    if not dt:
         return False
+    now = datetime.now(APP_TIMEZONE)
+    return dt.astimezone(APP_TIMEZONE).date() == now.date()
+
+
+def _is_dashboard_event(entry: Dict[str, Any]) -> bool:
+    return entry.get("source") != "razorpay_tools"
+
+
+def _lookup_path(value: Dict[str, Any], *path: str) -> Any:
+    current: Any = value
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _amount_from_event(e: Dict[str, Any]) -> float:
+    candidates = [
+        (_lookup_path(e, "outputs", "outputs", "raw", "amount"), 100.0),
+        (_lookup_path(e, "outputs", "raw", "amount"), 100.0),
+        (_lookup_path(e, "outputs", "outputs", "amount"), 1.0),
+        (_lookup_path(e, "outputs", "amount"), 1.0),
+        (_lookup_path(e, "inputs", "amount"), 1.0),
+    ]
+
+    for raw_value, divisor in candidates:
+        if raw_value is None:
+            continue
+        try:
+            return float(raw_value) / divisor
+        except Exception:
+            continue
+    return 0.0
+
+
+def _today_dashboard_logs() -> list[Dict[str, Any]]:
+    return [
+        entry
+        for entry in audit.get_recent(1000)
+        if _is_dashboard_event(entry) and _is_today(entry.get("timestamp", ""))
+    ]
+
+
+def _successful_capture_logs(logs: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    return [entry for entry in logs if entry.get("action") == "capture_payment" and not entry.get("error")]
+
+
+def _order_logs(logs: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    return [entry for entry in logs if entry.get("action") == "create_order" and not entry.get("error")]
+
+
+def _revenue_logs(logs: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    captures = _successful_capture_logs(logs)
+    return captures if captures else _order_logs(logs)
 
 
 @app.get("/api/metrics")
 async def get_metrics():
-    logs = audit.get_recent(1000)
-    revenue = 0.0
-    orders = 0
+    logs = _today_dashboard_logs()
+    revenue = sum(_amount_from_event(entry) for entry in _revenue_logs(logs))
+    orders = len(_order_logs(logs))
     upsell_offered = 0
     upsell_accepted = 0
     agent_actions = 0
     for e in logs:
-        ts = e.get("timestamp")
-        if not ts or not _is_today(ts):
-            continue
         action = e.get("action")
-        if action == "capture_payment":
-            # attempt to read amount
-            amt = 0
-            try:
-                outputs = e.get("outputs", {})
-                raw = outputs.get("raw") if isinstance(outputs, dict) else None
-                if isinstance(raw, dict) and raw.get("amount"):
-                    amt = raw.get("amount") / 100.0
-                else:
-                    amt = outputs.get("amount", 0)
-            except Exception:
-                amt = 0
-            revenue += float(amt or 0)
-        if action == "create_order":
-            orders += 1
         if action == "upsell_decision":
             if e.get("outputs", {}).get("decision"):
                 upsell_offered += 1
@@ -120,47 +173,51 @@ async def get_metrics():
 @app.get("/api/chart-data")
 async def get_chart_data():
     """Return hourly revenue breakdown for today and yesterday from audit log."""
-    from collections import defaultdict
-
-    logs = audit.get_recent(1000)
     hourly = defaultdict(float)
-    for e in logs:
-        ts = e.get("timestamp", "")
-        if e.get("action") == "capture_payment" and _is_today(ts):
-            try:
-                hour = int(ts[11:13])
-                slot = f"{(hour // 3) * 3:02d}:00"
-                amt = 0
-                raw = e.get("outputs", {}).get("raw", {})
-                if isinstance(raw, dict) and raw.get("amount"):
-                    amt = raw["amount"] / 100.0
-                hourly[slot] += amt
-            except Exception:
-                pass
+    for entry in _revenue_logs(_today_dashboard_logs()):
+        ts = entry.get("timestamp", "")
+        dt = _parse_timestamp(ts)
+        if not dt:
+            continue
+        local_dt = dt.astimezone(APP_TIMEZONE)
+        slot = f"{(local_dt.hour // 3) * 3:02d}:00"
+        hourly[slot] += _amount_from_event(entry)
 
     slots = ["00:00", "03:00", "06:00", "09:00", "12:00", "15:00", "18:00", "21:00"]
-    return {"chart": [{"hour": s, "today": hourly.get(s, 0), "yesterday": round(hourly.get(s, 0) * 0.82, 2)} for s in slots]}
+    return {
+        "chart": [
+            {
+                "hour": slot,
+                "today": round(hourly.get(slot, 0), 2),
+                "yesterday": round(hourly.get(slot, 0) * 0.82, 2),
+            }
+            for slot in slots
+        ]
+    }
 
 
 @app.get("/api/notifications")
 async def get_notifications():
-    logs = audit.get_recent(20)
+    logs = _today_dashboard_logs()
     notifs = []
     for e in logs:
         action = e.get("action", "")
         if action in ["upsell_accepted", "capture_payment", "checkout_error", "create_order"]:
             notifs.append({
-                "id": e.get("timestamp"),
+                "id": f"{e.get('timestamp', '')}:{action}",
                 "title": {
                     "upsell_accepted": "Upsell accepted",
                     "capture_payment": "Payment captured" if not e.get("error") else "Payment failed",
                     "checkout_error": "Checkout error",
-                    "create_order": "New order created"
+                    "create_order": "New order created",
                 }.get(action, action),
                 "time": e.get("timestamp", "")[-9:-4] if e.get("timestamp") else "",
-                "type": "error" if e.get("error") else "success"
+                "timestamp": e.get("timestamp", ""),
+                "action": action,
+                "reason": e.get("reason", ""),
+                "type": "error" if e.get("error") else "success",
             })
-    return {"notifications": notifs[:5]}
+    return {"notifications": list(reversed(notifs[-5:]))}
 
 
 @app.post("/api/agent/toggle")

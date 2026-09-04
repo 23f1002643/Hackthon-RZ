@@ -5,4 +5,5 @@ razorpay
 langgraph
 pydantic
 pytest
+selenium
 openai

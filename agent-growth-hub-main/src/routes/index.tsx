@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   ArrowDownRight,
@@ -17,7 +17,6 @@ import {
   Menu,
   Moon,
   Package,
-  PanelLeft,
   Play,
   ReceiptIndianRupee,
   Search,
@@ -26,7 +25,6 @@ import {
   Sparkles,
   Sun,
   Target,
-  X,
   Zap,
 } from "lucide-react";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -40,9 +38,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-
-import { fetchAuditLogs, fetchChartData, fetchMetrics, fetchNotifications, postCheckout, toggleAgent } from "@/lib/api";
 import { Toaster } from "@/components/ui/sonner";
+import { fetchAuditLogs, fetchChartData, fetchMetrics, fetchNotifications, postCheckout, toggleAgent } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/")({
@@ -60,6 +57,7 @@ export const Route = createFileRoute("/")({
 });
 
 type ViewId = "overview" | "agent" | "checkout" | "audit";
+type DashboardLog = Record<string, any>;
 
 const navItems: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -68,7 +66,7 @@ const navItems: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = 
   { id: "audit", label: "Audit trail", icon: FileClock },
 ];
 
-const chartData = [
+const chartSeed = [
   { hour: "00:00", today: 4, yesterday: 6 },
   { hour: "03:00", today: 9, yesterday: 8 },
   { hour: "06:00", today: 14, yesterday: 12 },
@@ -79,68 +77,309 @@ const chartData = [
   { hour: "21:00", today: 86, yesterday: 79 },
 ];
 
-const actions = [
+const recentActionSeed = [
   { time: "09:42:18", action: "Upsell", detail: "Recommended dupatta pairing", outcome: "success", value: "+₹1,299" },
   { time: "09:41:52", action: "Checkout", detail: "Address intent confirmed", outcome: "success", value: "Captured" },
   { time: "09:40:27", action: "Recovery", detail: "Payment retry initiated", outcome: "pending", value: "Retry 1/3" },
   { time: "09:38:04", action: "Upsell", detail: "Suggested festive bundle", outcome: "success", value: "+₹2,498" },
   { time: "09:35:46", action: "Guardrail", detail: "High-value order held for review", outcome: "failed", value: "₹28,400" },
-  { time: "09:32:11", action: "Checkout", detail: "Coupon eligibility checked", outcome: "success", value: "Eligible" },
 ];
 
-const auditEntries = [
+const auditSeed: DashboardLog[] = [
   { time: "09:42:18", label: "Upsell accepted", reason: "Customer viewed size guide twice; paired accessory matched cart intent.", tone: "success" },
   { time: "09:40:27", label: "Retry payment", reason: "Gateway returned a transient timeout; within the 3-attempt retry policy.", tone: "warning" },
   { time: "09:35:46", label: "Order held", reason: "Order value crossed ₹25,000 max limit; merchant review required.", tone: "danger" },
   { time: "09:32:11", label: "Coupon approved", reason: "Returning customer and cart total met the ₹2,000 threshold.", tone: "success" },
 ];
 
+const notificationDismissedKey = "zephyr-notification-dismissed-ids";
+const auditDismissedKey = "zephyr-audit-dismissed-ids";
+
+const actionLabels: Record<string, string> = {
+  analyze_cart: "Cart analyzed",
+  upsell_decision: "Upsell evaluated",
+  upsell_accepted: "Upsell accepted",
+  create_customer: "Customer created",
+  create_order: "Order created",
+  capture_payment: "Payment captured",
+  checkout_error: "Checkout error",
+};
+
+function cleanDisplayText(value?: string, fallback = "") {
+  const source = String(value ?? "").trim();
+  if (!source) return fallback;
+
+  const cleaned = source
+    .replace(/\(fallback:.*$/i, "")
+    .replace(/error code:\s*\d+.*$/i, "")
+    .replace(/\{.*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^["']+|["']+$/g, "")
+    .trim();
+
+  return cleaned || fallback;
+}
+
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
+  }).format(value);
+}
+
+function formatIndianTime(input?: Date | string) {
+  const date = input ? new Date(input) : new Date();
+  if (Number.isNaN(date.getTime())) return "--:--:--";
+  return date.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
+}
+
+function formatIndianDate(input?: Date | string) {
+  const date = input ? new Date(input) : new Date();
+  if (Number.isNaN(date.getTime())) return "--";
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatAuditTime(input?: string) {
+  if (!input) return "";
+  const date = new Date(input);
+  if (Number.isNaN(date.getTime())) return input;
+  return date.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
+}
+
+function formatAuditDate(input?: string) {
+  if (!input) return "";
+  const date = new Date(input);
+  if (Number.isNaN(date.getTime())) return input;
+  return date.toLocaleDateString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function humanizeAction(action?: string) {
+  if (!action) return "Agent action";
+  if (actionLabels[action]) return actionLabels[action];
+  return action
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function getEntryId(entry: DashboardLog) {
+  return String(entry.id ?? `${entry.timestamp ?? entry.time ?? ""}:${entry.action ?? entry.label ?? entry.title ?? ""}`);
+}
+
+function getEntryAmount(entry: DashboardLog) {
+  const candidates: Array<[unknown, number]> = [
+    [entry?.outputs?.outputs?.raw?.amount, 100],
+    [entry?.outputs?.raw?.amount, 100],
+    [entry?.outputs?.outputs?.amount, 1],
+    [entry?.outputs?.amount, 1],
+    [entry?.inputs?.amount, 1],
+  ];
+
+  for (const [rawAmount, divisor] of candidates) {
+    if (rawAmount == null) continue;
+    const amount = Number(rawAmount);
+    if (Number.isFinite(amount) && amount > 0) return amount / divisor;
+  }
+
+  return 0;
+}
+
+function getEntryLabel(entry: DashboardLog) {
+  return cleanDisplayText(entry.title) || cleanDisplayText(entry.label) || humanizeAction(entry.action);
+}
+
+function getEntryReason(entry: DashboardLog) {
+  return (
+    cleanDisplayText(entry.reason) ||
+    cleanDisplayText(entry?.outputs?.suggestion?.reason) ||
+    cleanDisplayText(entry?.outputs?.outputs?.suggestion?.reason) ||
+    cleanDisplayText(entry.detail) ||
+    "No additional context."
+  );
+}
+
+function getEntryTime(entry: DashboardLog) {
+  if (entry.timestamp) return formatAuditTime(entry.timestamp);
+  return entry.time || "";
+}
+
+function getEntryOutcome(entry: DashboardLog) {
+  if (entry.error || entry.type === "error") return "Failed";
+  if (entry.action === "upsell_decision" && !(entry?.outputs?.decision ?? entry?.outputs?.outputs?.decision)) return "Skipped";
+  return "Recorded";
+}
+
+function getEntryOutcomeClass(entry: DashboardLog) {
+  const outcome = getEntryOutcome(entry);
+  if (outcome === "Failed") return "text-destructive";
+  if (outcome === "Skipped") return "text-warning";
+  return "text-success";
+}
+
+function getEntryValue(entry: DashboardLog) {
+  const amount = getEntryAmount(entry);
+  return amount > 0 ? formatCurrency(amount) : "";
+}
+
+function buildSearchText(entry: DashboardLog) {
+  const cartItems = Array.isArray(entry?.inputs?.cart) ? entry.inputs.cart.map((item: DashboardLog) => item?.name).join(" ") : "";
+  const customerInfo =
+    entry?.inputs?.customer_info && typeof entry.inputs.customer_info === "object"
+      ? Object.values(entry.inputs.customer_info).join(" ")
+      : "";
+  const suggestion = entry?.outputs?.suggestion?.item || entry?.outputs?.outputs?.suggestion?.item || "";
+
+  return [getEntryLabel(entry), getEntryReason(entry), entry.action || "", cartItems, customerInfo, suggestion].join(" ").toLowerCase();
+}
+
+function readStoredIds(key: string) {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredIds(key: string, ids: string[]) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(key, JSON.stringify(Array.from(new Set(ids))));
+}
+
+function mergeIds(current: string[], extra: string[]) {
+  return Array.from(new Set([...current, ...extra]));
+}
+
 function Dashboard() {
   const [view, setView] = useState<ViewId>("overview");
   const [agentLive, setAgentLive] = useState(true);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [lightMode, setLightMode] = useState(false);
-  const [showSearch, setShowSearch] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [clock, setClock] = useState("09:42:18");
-  const [notifications, setNotifications] = useState<any[]>([]);
+  const [clock, setClock] = useState(() => formatIndianTime());
+  const [headerDate, setHeaderDate] = useState(() => formatIndianDate());
+  const [auditLogs, setAuditLogs] = useState<DashboardLog[]>([]);
+  const [hiddenAuditIds, setHiddenAuditIds] = useState<string[]>([]);
+  const [notifications, setNotifications] = useState<DashboardLog[]>([]);
+  const [dismissedNotificationIds, setDismissedNotificationIds] = useState<string[]>([]);
   const [showNotifs, setShowNotifs] = useState(false);
+  const [selectedAuditEntry, setSelectedAuditEntry] = useState<DashboardLog | null>(null);
+  const deferredSearchTerm = useDeferredValue(searchTerm.trim().toLowerCase());
 
   useEffect(() => {
     document.documentElement.classList.toggle("light", lightMode);
     const timer = window.setInterval(() => {
-      setClock(new Date().toLocaleTimeString("en-IN", { hour12: false }));
+      setClock(formatIndianTime());
+      setHeaderDate(formatIndianDate());
     }, 1000);
     return () => window.clearInterval(timer);
   }, [lightMode]);
 
   useEffect(() => {
-    const load = () => fetchNotifications().then((d) => setNotifications(d.notifications || [])).catch(() => {});
-    load();
-    const id = setInterval(load, 10000);
-    return () => clearInterval(id);
+    setHiddenAuditIds(readStoredIds(auditDismissedKey));
+    setDismissedNotificationIds(readStoredIds(notificationDismissedKey));
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadAuditLogs() {
+      try {
+        const data = await fetchAuditLogs();
+        if (mounted) setAuditLogs(data.logs || []);
+      } catch {
+        if (mounted) setAuditLogs([]);
+      }
+    }
+
+    loadAuditLogs();
+    const id = window.setInterval(loadAuditLogs, 5000);
+    return () => {
+      mounted = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const dismissedSet = new Set(dismissedNotificationIds);
+
+    async function loadNotifications() {
+      try {
+        const data = await fetchNotifications();
+        if (!mounted) return;
+        setNotifications((data.notifications || []).filter((entry: DashboardLog) => !dismissedSet.has(getEntryId(entry))));
+      } catch {
+        if (mounted) setNotifications([]);
+      }
+    }
+
+    loadNotifications();
+    const id = window.setInterval(loadNotifications, 10000);
+    return () => {
+      mounted = false;
+      window.clearInterval(id);
+    };
+  }, [dismissedNotificationIds]);
 
   async function runSimulation() {
     try {
       const sampleCart = [
-        { name: 'Hand-block printed kurta', price: 2499, qty: 1 },
-        { name: 'Chanderi silk dupatta', price: 1299, qty: 1 },
+        { name: "Hand-block printed kurta", price: 2499, qty: 1 },
+        { name: "Chanderi silk dupatta", price: 1299, qty: 1 },
       ];
-      const customer = { name: 'Sim Buyer', email: 'sim@zephyr.com', contact: '9999999999' };
+      const customer = { name: "Sim Buyer", email: "sim@zephyr.com", contact: "9999999999" };
       const res = await postCheckout(sampleCart, customer);
       if (res?.ok) {
-        toast.success('Checkout simulation completed');
+        toast.success("Checkout simulation completed");
       } else {
-        toast.error('Checkout simulation failed');
+        toast.error("Checkout simulation failed");
       }
-    } catch (e) {
-      console.error('simulation failed', e);
-      toast.error('Simulation error: ' + (e?.message || String(e)));
+    } catch (error) {
+      console.error("simulation failed", error);
+      toast.error(`Simulation error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   const viewTitle = useMemo(() => navItems.find((item) => item.id === view)?.label ?? "Overview", [view]);
+  const visibleAuditLogs = useMemo(
+    () => auditLogs.filter((entry) => !hiddenAuditIds.includes(getEntryId(entry))),
+    [auditLogs, hiddenAuditIds],
+  );
+  const searchResults = useMemo(() => {
+    if (!deferredSearchTerm) return [];
+    return visibleAuditLogs.filter((entry) => buildSearchText(entry).includes(deferredSearchTerm)).slice(0, 8);
+  }, [deferredSearchTerm, visibleAuditLogs]);
+
+  function dismissCurrentNotifications() {
+    const nextIds = mergeIds(dismissedNotificationIds, notifications.map((entry) => getEntryId(entry)));
+    setDismissedNotificationIds(nextIds);
+    writeStoredIds(notificationDismissedKey, nextIds);
+    setNotifications([]);
+    setShowNotifs(false);
+  }
+
+  function clearVisibleAuditLogs() {
+    const nextIds = mergeIds(hiddenAuditIds, visibleAuditLogs.map((entry) => getEntryId(entry)));
+    setHiddenAuditIds(nextIds);
+    writeStoredIds(auditDismissedKey, nextIds);
+  }
 
   return (
     <div className="page-load min-h-screen bg-background text-foreground">
@@ -164,46 +403,53 @@ function Dashboard() {
               <span className="text-border">IST</span>
             </div>
             <div className="hidden h-5 w-px bg-border md:block" />
-            {showSearch ? (
+            <div className="relative hidden md:block">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <input
-                autoFocus
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                onBlur={() => setShowSearch(false)}
-                placeholder="Search audit, products, customers..."
-                className="h-8 rounded-md border border-border bg-card px-2 text-sm text-foreground"
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search orders, customers, agent actions..."
+                className="h-9 w-[340px] rounded-md border border-border bg-card pl-9 pr-3 text-sm text-foreground outline-none transition-colors focus:border-primary"
               />
-            ) : (
-              <Button variant="ghost" size="icon" className="text-muted-foreground" title="Search" aria-label="Search" onClick={() => setShowSearch(true)}>
-                <Search />
-              </Button>
-            )}
+            </div>
+            <Button variant="ghost" size="icon" className="text-muted-foreground md:hidden" title="Open audit trail" aria-label="Open audit trail" onClick={() => setView("audit")}>
+              <Search />
+            </Button>
             <div className="relative">
-              <Button
-                variant="ghost" size="icon"
-                className="relative text-muted-foreground"
-                onClick={() => setShowNotifs((v) => !v)}
-              >
+              <Button variant="ghost" size="icon" className="relative text-muted-foreground" onClick={() => setShowNotifs((open) => !open)}>
                 <Bell />
-                {notifications.length > 0 && (
-                  <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary live-dot" />
-                )}
+                {notifications.length > 0 && <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary live-dot" />}
               </Button>
               {showNotifs && (
-                <div className="absolute right-0 top-10 z-50 w-72 overflow-hidden rounded-md border border-border bg-card shadow-[var(--shadow-panel)]">
-                  <div className="border-b border-border px-4 py-3 text-xs font-medium">Notifications</div>
-                  {notifications.length === 0
-                    ? <div className="px-4 py-6 text-center text-xs text-muted-foreground">No recent activity</div>
-                    : notifications.map((n, i) => (
-                        <div key={i} className="flex items-start gap-3 border-b border-border px-4 py-3 last:border-0 hover:bg-muted/30">
-                          <span className={`mt-1 size-1.5 shrink-0 rounded-full ${n.type === 'error' ? 'bg-destructive' : 'bg-success'}`} />
-                          <div>
-                            <p className="text-xs font-medium">{n.title}</p>
-                            <p className="text-[11px] text-muted-foreground tabular-nums">{n.time}</p>
-                          </div>
+                <div className="absolute right-0 top-10 z-50 w-80 overflow-hidden rounded-md border border-border bg-card shadow-[var(--shadow-panel)]">
+                  <div className="flex items-center justify-between border-b border-border px-4 py-3 text-xs font-medium">
+                    <span>Notifications</span>
+                    <button type="button" className="text-[10px] font-medium text-muted-foreground hover:text-foreground" onClick={dismissCurrentNotifications}>
+                      Clear
+                    </button>
+                  </div>
+                  {notifications.length === 0 ? (
+                    <div className="px-4 py-6 text-center text-xs text-muted-foreground">No recent activity</div>
+                  ) : (
+                    notifications.map((entry) => (
+                      <button
+                        key={getEntryId(entry)}
+                        type="button"
+                        className="flex w-full items-start gap-3 border-b border-border px-4 py-3 text-left last:border-0 hover:bg-muted/30"
+                        onClick={() => {
+                          setSelectedAuditEntry(entry);
+                          setShowNotifs(false);
+                        }}
+                      >
+                        <span className={`mt-1 size-1.5 shrink-0 rounded-full ${entry.type === "error" ? "bg-destructive" : "bg-success"}`} />
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium">{getEntryLabel(entry)}</p>
+                          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{getEntryReason(entry)}</p>
+                          <p className="mt-1 text-[11px] tabular-nums text-muted-foreground">{getEntryTime(entry)}</p>
                         </div>
-                      ))
-                  }
+                      </button>
+                    ))
+                  )}
                 </div>
               )}
             </div>
@@ -230,8 +476,10 @@ function Dashboard() {
         <main className="mx-auto max-w-[1680px] space-y-6 p-5 lg:p-8">
           <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
             <div>
-              <p className="mb-2 text-xs font-medium text-primary">Thursday, 3 September 2026</p>
-              <h1 className={`text-2xl font-semibold tracking-tight lg:text-[28px] ${view === "overview" ? "gradient-text-primary" : ""}`}>{view === "overview" ? "Revenue intelligence" : viewTitle}</h1>
+              <p className="mb-2 text-xs font-medium text-primary">{headerDate}</p>
+              <h1 className={`text-2xl font-semibold tracking-tight lg:text-[28px] ${view === "overview" ? "gradient-text-primary" : ""}`}>
+                {view === "overview" ? "Revenue intelligence" : viewTitle}
+              </h1>
               <p className="mt-1 text-sm text-muted-foreground">
                 {view === "overview" && "Autonomous commerce performance for Zephyr Apparel."}
                 {view === "agent" && "Set the boundaries your agent must operate within."}
@@ -241,18 +489,88 @@ function Dashboard() {
             </div>
             <div className="flex items-center gap-3">
               <AgentStatusButton live={agentLive} onClick={() => setConfirmOpen(true)} />
-              <Button className="bg-brand-gradient text-primary-foreground shadow-sm hover:opacity-90" onClick={async () => { await runSimulation(); setView("checkout"); }}>
+              <Button
+                className="bg-brand-gradient text-primary-foreground shadow-sm hover:opacity-90"
+                onClick={async () => {
+                  await runSimulation();
+                  setView("checkout");
+                }}
+              >
                 <Play className="size-3.5" /> Run simulation
               </Button>
             </div>
           </div>
 
-          {view === "overview" && <Overview />}
+          {deferredSearchTerm && (
+            <SearchResults
+              term={searchTerm}
+              results={searchResults}
+              onOpenAudit={() => setView("audit")}
+              onSelect={(entry) => {
+                setSelectedAuditEntry(entry);
+                setView("audit");
+              }}
+            />
+          )}
+
+          {view === "overview" && (
+            <Overview
+              auditLogs={visibleAuditLogs}
+              onOpenAudit={() => setView("audit")}
+              onSelectEntry={setSelectedAuditEntry}
+              onClearAudit={clearVisibleAuditLogs}
+            />
+          )}
           {view === "agent" && <AgentControl live={agentLive} onToggle={() => setConfirmOpen(true)} />}
           {view === "checkout" && <CheckoutSimulation />}
-          {view === "audit" && <AuditTrail searchTerm={searchTerm} />}
+          {view === "audit" && (
+            <AuditTrail
+              logs={visibleAuditLogs}
+              searchTerm={searchTerm}
+              onSelectEntry={setSelectedAuditEntry}
+              onClear={clearVisibleAuditLogs}
+            />
+          )}
         </main>
       </div>
+
+      <Dialog open={Boolean(selectedAuditEntry)} onOpenChange={(open) => !open && setSelectedAuditEntry(null)}>
+        <DialogContent className="border-border bg-card sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>{selectedAuditEntry ? getEntryLabel(selectedAuditEntry) : "Audit detail"}</DialogTitle>
+            <DialogDescription>
+              {selectedAuditEntry?.timestamp
+                ? `${formatAuditDate(selectedAuditEntry.timestamp)} · ${formatAuditTime(selectedAuditEntry.timestamp)}`
+                : selectedAuditEntry?.time || "Timestamp unavailable"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 rounded border border-border bg-background p-4 text-sm">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">Event</p>
+              <p className="mt-2 text-foreground">{selectedAuditEntry ? humanizeAction(selectedAuditEntry.action) : "Audit detail"}</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">Reason</p>
+              <p className="mt-2 text-foreground">{selectedAuditEntry ? getEntryReason(selectedAuditEntry) : "No additional context."}</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">Outcome</p>
+              <p className={`mt-2 ${selectedAuditEntry ? getEntryOutcomeClass(selectedAuditEntry) : "text-foreground"}`}>
+                {selectedAuditEntry ? getEntryOutcome(selectedAuditEntry) : "Recorded"}
+              </p>
+            </div>
+            {selectedAuditEntry && getEntryValue(selectedAuditEntry) && (
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">Amount</p>
+                <p className="mt-2 text-foreground">{getEntryValue(selectedAuditEntry)}</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setSelectedAuditEntry(null)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="border-border bg-card sm:max-w-[440px]">
@@ -265,23 +583,27 @@ function Dashboard() {
             </DialogDescription>
           </DialogHeader>
           <div className="border border-border bg-background p-3 text-sm">
-            <div className="flex items-center gap-2 font-medium"><Gauge className="size-4 text-primary" /> Current guardrails are active</div>
+            <div className="flex items-center gap-2 font-medium">
+              <Gauge className="size-4 text-primary" /> Current guardrails are active
+            </div>
             <p className="mt-1 pl-6 text-xs text-muted-foreground">Max order ₹25,000 · 3 retries · 12% upsell threshold</p>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </Button>
             <Button
               className={agentLive ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : "bg-brand-gradient text-primary-foreground hover:opacity-90"}
               onClick={async () => {
                 const nextAction = agentLive ? "pause" : "resume";
                 try {
                   const result = await toggleAgent(nextAction);
-                  setAgentLive(result?.agent_paused === false ? true : false);
+                  setAgentLive(result?.agent_paused === false);
                   setConfirmOpen(false);
                   toast.success(nextAction === "pause" ? "Commerce agent paused" : "Commerce agent resumed");
                 } catch (error) {
                   console.error("toggle failed", error);
-                  toast.error("Agent sync failed: " + (error instanceof Error ? error.message : String(error)));
+                  toast.error(`Agent sync failed: ${error instanceof Error ? error.message : String(error)}`);
                 }
               }}
             >
@@ -329,14 +651,16 @@ function Sidebar({ activeView, onNavigate }: { activeView: ViewId; onNavigate: (
         </nav>
         <div className="my-5 h-px bg-sidebar-border" />
         <Button variant="ghost" className="h-10 w-full justify-start gap-3 px-3 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" title="Settings" aria-label="Settings">
-          <Settings2 /><span className="whitespace-nowrap opacity-0 transition-opacity duration-150 group-hover/sidebar:opacity-100">Settings</span>
+          <Settings2 />
+          <span className="whitespace-nowrap opacity-0 transition-opacity duration-150 group-hover/sidebar:opacity-100">Settings</span>
         </Button>
       </div>
       <div className="border-t border-sidebar-border p-3">
         <div className="flex items-center gap-3 rounded-md bg-sidebar-accent p-2">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[10px] font-semibold text-primary">AR</div>
           <div className="min-w-0 whitespace-nowrap opacity-0 transition-opacity duration-150 group-hover/sidebar:opacity-100">
-            <p className="truncate text-xs font-medium">Ananya Rao</p><p className="text-[10px] text-muted-foreground">Admin</p>
+            <p className="truncate text-xs font-medium">Ananya Rao</p>
+            <p className="text-[10px] text-muted-foreground">Admin</p>
           </div>
         </div>
       </div>
@@ -353,41 +677,117 @@ function AgentStatusButton({ live, onClick }: { live: boolean; onClick: () => vo
   );
 }
 
-function Overview() {
+function SearchResults({
+  term,
+  results,
+  onSelect,
+  onOpenAudit,
+}: {
+  term: string;
+  results: DashboardLog[];
+  onSelect: (entry: DashboardLog) => void;
+  onOpenAudit: () => void;
+}) {
+  return (
+    <section className="overflow-hidden border border-border bg-card shadow-[var(--shadow-panel)]">
+      <div className="flex items-center justify-between border-b border-border px-4 py-3.5">
+        <div>
+          <p className="text-sm font-medium">Search results</p>
+          <p className="mt-1 text-xs text-muted-foreground">Showing matches for "{term.trim()}"</p>
+        </div>
+        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground" onClick={onOpenAudit}>
+          Open audit
+          <ChevronRight className="size-3" />
+        </Button>
+      </div>
+      <div className="divide-y divide-border">
+        {results.length === 0 ? (
+          <div className="px-4 py-6 text-sm text-muted-foreground">No matching orders, customers, or agent actions yet.</div>
+        ) : (
+          results.map((entry) => (
+            <button
+              key={getEntryId(entry)}
+              type="button"
+              className="grid w-full gap-2 bg-transparent px-4 py-3 text-left transition-colors hover:bg-muted/30 md:grid-cols-[160px_220px_1fr_120px] md:items-center md:gap-4"
+              onClick={() => onSelect(entry)}
+            >
+              <span className="text-xs tabular-nums text-muted-foreground">{getEntryTime(entry)}</span>
+              <span className="text-sm font-medium text-foreground">{getEntryLabel(entry)}</span>
+              <span className="text-xs leading-relaxed text-muted-foreground">{getEntryReason(entry)}</span>
+              <span className={`text-xs font-medium ${getEntryOutcomeClass(entry)}`}>{getEntryOutcome(entry)}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function Overview({
+  auditLogs,
+  onOpenAudit,
+  onSelectEntry,
+  onClearAudit,
+}: {
+  auditLogs: DashboardLog[];
+  onOpenAudit: () => void;
+  onSelectEntry: (entry: DashboardLog) => void;
+  onClearAudit: () => void;
+}) {
   const [metrics, setMetrics] = useState<any>({ revenue: 0, order_count: 0, upsell_acceptance_rate: 0, agent_actions: 0 });
 
   useEffect(() => {
     let mounted = true;
-    async function load() {
+
+    async function loadMetrics() {
       try {
-        const m = await fetchMetrics();
-        if (mounted) setMetrics(m);
-      } catch (e) {
-        console.error(e);
+        const result = await fetchMetrics();
+        if (mounted) setMetrics(result);
+      } catch (error) {
+        console.error(error);
       }
     }
-    load();
-    return () => { mounted = false; };
+
+    loadMetrics();
+    const id = window.setInterval(loadMetrics, 5000);
+    return () => {
+      mounted = false;
+      window.clearInterval(id);
+    };
   }, []);
 
   return (
     <>
       <section className="grid border border-border bg-card shadow-[var(--shadow-panel)] sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="Revenue today" value={`₹${metrics.revenue}`} change="+18.4%" detail="vs yesterday" icon={CircleDollarSign} positive />
-        <Kpi label="Orders" value={`${metrics.order_count}`} change="+12.8%" detail="vs yesterday" icon={Package} positive />
-        <Kpi label="Upsell accepted" value={`${Math.round(metrics.upsell_acceptance_rate)}`} change="17.8%" detail="of eligible orders" icon={Target} positive />
+        <Kpi label="Revenue today" value={formatCurrency(Number(metrics.revenue || 0))} change="+18.4%" detail="vs yesterday" icon={CircleDollarSign} positive />
+        <Kpi label="Orders" value={`${metrics.order_count ?? 0}`} change="+12.8%" detail="vs yesterday" icon={Package} positive />
+        <Kpi label="Upsell accepted" value={`${Math.round(Number(metrics.upsell_acceptance_rate || 0))}%`} change="17.8%" detail="of eligible orders" icon={Target} positive />
         <Kpi label="Agent actions" value={String(metrics.agent_actions ?? 0)} change="99.2%" detail="within policy" icon={Activity} positive />
       </section>
       <section className="grid gap-5 xl:grid-cols-[minmax(260px,0.88fr)_minmax(440px,1.5fr)_minmax(300px,1fr)]">
-        <ActivityFeed />
-        <RevenueChart totalRevenue={metrics.revenue} />
-        <AuditPreview />
+        <ActivityFeed logs={auditLogs} onOpenAudit={onOpenAudit} onSelectEntry={onSelectEntry} onClear={onClearAudit} />
+        <RevenueChart totalRevenue={Number(metrics.revenue || 0)} orderCount={Number(metrics.order_count || 0)} agentActions={Number(metrics.agent_actions || 0)} />
+        <AuditPreview logs={auditLogs} onOpenAudit={onOpenAudit} onSelectEntry={onSelectEntry} />
       </section>
     </>
   );
 }
 
-function Kpi({ label, value, change, detail, icon: Icon, positive }: { label: string; value: string; change: string; detail: string; icon: typeof Activity; positive?: boolean }) {
+function Kpi({
+  label,
+  value,
+  change,
+  detail,
+  icon: Icon,
+  positive,
+}: {
+  label: string;
+  value: string;
+  change: string;
+  detail: string;
+  icon: typeof Activity;
+  positive?: boolean;
+}) {
   return (
     <div className="border-b border-border p-5 last:border-b-0 sm:nth-[odd]:border-r xl:border-b-0 xl:border-r xl:last:border-r-0">
       <div className="flex items-center justify-between">
@@ -404,120 +804,378 @@ function Kpi({ label, value, change, detail, icon: Icon, positive }: { label: st
   );
 }
 
-function PanelHeader({ icon: Icon, title, meta, action, onAction }: { icon: typeof Activity; title: string; meta?: string; action?: string; onAction?: () => void }) {
+function PanelHeader({
+  icon: Icon,
+  title,
+  meta,
+  action,
+  onAction,
+  secondaryAction,
+  onSecondaryAction,
+}: {
+  icon: typeof Activity;
+  title: string;
+  meta?: string;
+  action?: string;
+  onAction?: () => void;
+  secondaryAction?: string;
+  onSecondaryAction?: () => void;
+}) {
   return (
     <div className="flex items-center justify-between border-b border-border px-4 py-3.5">
-      <div className="flex items-center gap-2.5"><Icon className="size-4 text-primary" /><h2 className="text-sm font-medium">{title}</h2>{meta && <span className="text-xs text-muted-foreground">{meta}</span>}</div>
-      {action && <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground" onClick={onAction}>{action}<ChevronRight className="size-3" /></Button>}
+      <div className="flex items-center gap-2.5">
+        <Icon className="size-4 text-primary" />
+        <h2 className="text-sm font-medium">{title}</h2>
+        {meta && <span className="text-xs text-muted-foreground">{meta}</span>}
+      </div>
+      <div className="flex items-center gap-1">
+        {secondaryAction && (
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px] text-muted-foreground" onClick={onSecondaryAction}>
+            {secondaryAction}
+          </Button>
+        )}
+        {action && (
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground" onClick={onAction}>
+            {action}
+            <ChevronRight className="size-3" />
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
 
-function ActivityFeed() {
-  const [logs, setLogs] = useState<any[]>([]);
-
-  useEffect(() => {
-    let mounted = true;
-    async function poll() {
-      try {
-        const data = await fetchAuditLogs();
-        if (!mounted) return;
-        setLogs(data.logs || []);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    poll();
-    const id = setInterval(poll, 5000);
-    return () => { mounted = false; clearInterval(id); };
-  }, []);
+function ActivityFeed({
+  logs,
+  onOpenAudit,
+  onSelectEntry,
+  onClear,
+}: {
+  logs: DashboardLog[];
+  onOpenAudit?: () => void;
+  onSelectEntry: (entry: DashboardLog) => void;
+  onClear: () => void;
+}) {
+  const visibleLogs = logs.slice(0, 6);
 
   return (
     <div className="overflow-hidden border border-border bg-card shadow-[var(--shadow-panel)]">
-      <PanelHeader icon={Zap} title="Agent activity" meta="Live" action="View all" />
+      <PanelHeader icon={Zap} title="Agent activity" meta="Live" action="View all" onAction={onOpenAudit} secondaryAction="Clear" onSecondaryAction={onClear} />
       <div className="divide-y divide-border">
-        {logs.slice(0, 6).map((l, i) => (
-          <ActivityRow key={i} time={l.timestamp?.split('T')[1]?.split('.')[0] ?? ''} action={l.action} detail={l.reason || ''} outcome={l.error ? 'failed' : 'success'} value={l.outputs && l.outputs.raw && l.outputs.raw.amount ? `₹${(l.outputs.raw.amount/100).toFixed(2)}` : ''} />
-        ))}
+        {visibleLogs.length === 0 ? (
+          <div className="px-4 py-8 text-center text-xs text-muted-foreground">No agent activity yet</div>
+        ) : (
+          visibleLogs.map((entry) => <ActivityRow key={getEntryId(entry)} entry={entry} onClick={() => onSelectEntry(entry)} />)
+        )}
       </div>
-      <div className="border-t border-border bg-muted/30 px-4 py-3 text-center text-[11px] text-muted-foreground">Showing the latest {logs.length} actions</div>
+      <div className="flex items-center justify-between border-t border-border bg-muted/30 px-4 py-3 text-[11px] text-muted-foreground">
+        <span>Showing the latest {visibleLogs.length} actions</span>
+        <button type="button" className="font-medium text-primary hover:text-primary/80" onClick={onOpenAudit}>
+          Open trail
+        </button>
+      </div>
     </div>
   );
 }
 
-function ActivityRow({ time, action, detail, outcome, value }: typeof actions[number]) {
-  const outcomeClass = outcome === "success" ? "bg-success/10 text-success" : outcome === "pending" ? "bg-warning/10 text-warning" : "bg-destructive/10 text-destructive";
+function ActivityRow({ entry, onClick }: { entry: DashboardLog; onClick?: () => void }) {
+  const outcome = getEntryOutcome(entry);
+  const outcomeClass = outcome === "Recorded" ? "bg-success/10 text-success" : outcome === "Skipped" ? "bg-warning/10 text-warning" : "bg-destructive/10 text-destructive";
+
   return (
-    <div className="group flex gap-3 px-4 py-3 transition-colors hover:bg-muted/30">
-      <div className="mt-1 flex size-6 shrink-0 items-center justify-center rounded border border-border bg-muted/50"><Sparkles className="size-3 text-primary" /></div>
-      <div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="truncate text-xs font-medium">{detail}</p><span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${outcomeClass}`}>{outcome}</span></div><div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground"><span>{action}</span><span>·</span><span className="tabular-nums">{time}</span><span className="ml-auto tabular-nums text-foreground/75">{value}</span></div></div>
-    </div>
+    <button type="button" className="group flex w-full gap-3 bg-transparent px-4 py-3 text-left transition-colors hover:bg-muted/30" onClick={onClick}>
+      <div className="mt-1 flex size-6 shrink-0 items-center justify-center rounded border border-border bg-muted/50">
+        <Sparkles className="size-3 text-primary" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-xs font-semibold text-foreground">{getEntryReason(entry)}</p>
+          <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${outcomeClass}`}>{outcome}</span>
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+          <span className="font-medium text-foreground/80">{getEntryLabel(entry)}</span>
+          <span>·</span>
+          <span className="tabular-nums">{getEntryTime(entry)}</span>
+          {getEntryValue(entry) ? <span className="ml-auto tabular-nums text-foreground">{getEntryValue(entry)}</span> : null}
+        </div>
+      </div>
+    </button>
   );
 }
 
-function RevenueChart({ totalRevenue = 0 }: { totalRevenue?: number }) {
-  const [liveChartData, setLiveChartData] = useState(chartData);
+function RevenueChart({
+  totalRevenue = 0,
+  orderCount = 0,
+  agentActions = 0,
+}: {
+  totalRevenue?: number;
+  orderCount?: number;
+  agentActions?: number;
+}) {
+  const [liveChartData, setLiveChartData] = useState(chartSeed);
 
   useEffect(() => {
-    fetchChartData().then((d) => { if (d.chart?.length) setLiveChartData(d.chart); }).catch(() => {});
+    let mounted = true;
+
+    async function loadChart() {
+      try {
+        const data = await fetchChartData();
+        if (mounted && data.chart?.length) setLiveChartData(data.chart);
+      } catch {
+        // Keep seeded chart data when the backend is unavailable.
+      }
+    }
+
+    loadChart();
+    const id = window.setInterval(loadChart, 8000);
+    return () => {
+      mounted = false;
+      window.clearInterval(id);
+    };
   }, []);
+
+  const peakHour = useMemo(() => {
+    if (liveChartData.length === 0) return "--";
+    return [...liveChartData].sort((left, right) => Number(right.today) - Number(left.today))[0]?.hour ?? "--";
+  }, [liveChartData]);
 
   return (
     <div className="overflow-hidden border border-border bg-card shadow-[var(--shadow-panel)]">
       <PanelHeader icon={BarChart3} title="Revenue performance" meta="Today · INR" action="Details" />
       <div className="p-4 pb-2">
-        <div className="flex items-end justify-between"><div><p className="text-3xl font-semibold tabular-nums tracking-tight gradient-text-primary">₹{totalRevenue.toLocaleString('en-IN')}</p><p className="mt-1 text-xs text-success">+18.4% <span className="text-muted-foreground">vs yesterday</span></p></div><div className="flex gap-4 text-[11px] text-muted-foreground"><span className="flex items-center gap-1.5"><i className="size-1.5 rounded-full bg-primary" />Today</span><span className="flex items-center gap-1.5"><i className="size-1.5 rounded-full bg-muted-foreground/50" />Yesterday</span></div></div>
+        <div className="flex items-end justify-between">
+          <div>
+            <p className="text-3xl font-semibold tabular-nums tracking-tight gradient-text-primary">{formatCurrency(totalRevenue)}</p>
+            <p className="mt-1 text-xs text-success">
+              +18.4% <span className="text-muted-foreground">vs yesterday</span>
+            </p>
+          </div>
+          <div className="flex gap-4 text-[11px] text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <i className="size-1.5 rounded-full bg-primary" />
+              Today
+            </span>
+            <span className="flex items-center gap-1.5">
+              <i className="size-1.5 rounded-full bg-muted-foreground/50" />
+              Yesterday
+            </span>
+          </div>
+        </div>
         <div className="mt-5 h-[250px] w-full">
-          <ResponsiveContainer width="100%" height="100%"><LineChart data={liveChartData} margin={{ top: 10, right: 4, bottom: 0, left: -18 }}>
-            <XAxis dataKey="hour" axisLine={false} tickLine={false} tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }} />
-            <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }} tickFormatter={(value) => `₹${value}k`} />
-            <Tooltip contentStyle={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "4px", color: "var(--color-foreground)", fontSize: "12px" }} formatter={(value: number, name: string) => [`₹${value}k`, name === "today" ? "Today" : "Yesterday"]} />
-            <Line type="monotone" dataKey="yesterday" stroke="var(--chart-yesterday)" strokeWidth={1.5} strokeDasharray="4 4" dot={false} />
-            <Line type="monotone" dataKey="today" stroke="var(--chart-revenue)" strokeWidth={2.5} dot={{ r: 2.5, fill: "var(--chart-revenue)", strokeWidth: 0 }} activeDot={{ r: 4 }} />
-          </LineChart></ResponsiveContainer>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={liveChartData} margin={{ top: 10, right: 4, bottom: 0, left: -18 }}>
+              <XAxis dataKey="hour" axisLine={false} tickLine={false} tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }} tickFormatter={(value) => formatCurrency(Number(value))} />
+              <Tooltip
+                contentStyle={{
+                  background: "var(--color-card)",
+                  border: "1px solid var(--color-border)",
+                  borderRadius: "4px",
+                  color: "var(--color-foreground)",
+                  fontSize: "12px",
+                }}
+                formatter={(value: number, name: string) => [formatCurrency(Number(value)), name === "today" ? "Today" : "Yesterday"]}
+              />
+              <Line type="monotone" dataKey="yesterday" stroke="var(--chart-yesterday)" strokeWidth={1.5} strokeDasharray="4 4" dot={false} />
+              <Line type="monotone" dataKey="today" stroke="var(--chart-revenue)" strokeWidth={2.5} dot={{ r: 2.5, fill: "var(--chart-revenue)", strokeWidth: 0 }} activeDot={{ r: 4 }} />
+            </LineChart>
+          </ResponsiveContainer>
         </div>
       </div>
-      <div className="grid grid-cols-3 border-t border-border"><ChartStat label="Peak hour" value="18:00" /><ChartStat label="Avg. order value" value="₹431" /><ChartStat label="Agent contribution" value="₹42.8k" /></div>
+      <div className="grid grid-cols-3 border-t border-border">
+        <ChartStat label="Peak hour" value={peakHour} />
+        <ChartStat label="Avg. order value" value={orderCount > 0 ? formatCurrency(totalRevenue / orderCount) : "₹0"} />
+        <ChartStat label="Agent contribution" value={agentActions > 0 ? formatCurrency(totalRevenue) : "₹0"} />
+      </div>
     </div>
   );
 }
 
-function ChartStat({ label, value }: { label: string; value: string }) { return <div className="border-r border-border p-3 last:border-r-0"><p className="text-[10px] text-muted-foreground">{label}</p><p className="mt-1 text-xs font-medium tabular-nums">{value}</p></div>; }
-
-function AuditPreview() {
-  return <div className="overflow-hidden border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={FileClock} title="Audit log" meta="Today" action="Open trail" /><div className="divide-y divide-border">{auditEntries.map((entry) => <AuditRow key={entry.time} {...entry} />)}</div><div className="border-t border-border bg-muted/30 px-4 py-3 text-center text-[11px] text-muted-foreground">Every decision includes a reason</div></div>;
+function ChartStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border-r border-border p-3 last:border-r-0">
+      <p className="text-[10px] text-muted-foreground">{label}</p>
+      <p className="mt-1 text-xs font-medium tabular-nums">{value}</p>
+    </div>
+  );
 }
 
-function AuditRow({ time, label, reason, tone }: typeof auditEntries[number]) {
+function AuditPreview({
+  logs,
+  onOpenAudit,
+  onSelectEntry,
+}: {
+  logs: DashboardLog[];
+  onOpenAudit?: () => void;
+  onSelectEntry: (entry: DashboardLog) => void;
+}) {
+  const previewEntries = logs.length > 0 ? logs.slice(0, 4) : auditSeed;
+
+  return (
+    <div className="overflow-hidden border border-border bg-card shadow-[var(--shadow-panel)]">
+      <PanelHeader icon={FileClock} title="Audit log" meta="Today" action="Open trail" onAction={onOpenAudit} />
+      <div className="divide-y divide-border">
+        {previewEntries.map((entry) => (
+          <AuditRow key={getEntryId(entry)} entry={entry} onClick={() => onSelectEntry(entry)} />
+        ))}
+      </div>
+      <div className="border-t border-border bg-muted/30 px-4 py-3 text-center text-[11px] text-muted-foreground">Every decision includes a reason</div>
+    </div>
+  );
+}
+
+function AuditRow({ entry, onClick }: { entry: DashboardLog; onClick?: () => void }) {
   const toneClass =
-    tone === "success" ? "bg-success shadow-glow-success" :
-    tone === "warning" ? "bg-warning" :
-      "bg-destructive";
+    getEntryOutcome(entry) === "Recorded" ? "bg-success shadow-glow-success" : getEntryOutcome(entry) === "Skipped" ? "bg-warning" : "bg-destructive";
 
-  const labelClass =
-    tone === "success" ? "text-success" :
-    tone === "warning" ? "text-warning" :
-      "text-destructive";
-
-  return <div className="flex gap-3 px-4 py-3.5"><span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${toneClass}`} /><div className="min-w-0"><div className="flex items-center justify-between gap-2"><p className={`text-xs font-medium ${labelClass}`}>{label}</p><span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{time}</span></div><p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{reason}</p></div></div>;
+  return (
+    <button type="button" className="flex w-full gap-3 bg-transparent px-4 py-3.5 text-left hover:bg-muted/30" onClick={onClick}>
+      <span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${toneClass}`} />
+      <div className="min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <p className={`text-xs font-medium ${getEntryOutcomeClass(entry)}`}>{getEntryLabel(entry)}</p>
+          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{getEntryTime(entry)}</span>
+        </div>
+        <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{getEntryReason(entry)}</p>
+      </div>
+    </button>
+  );
 }
 
 function AgentControl({ live, onToggle }: { live: boolean; onToggle: () => void }) {
-  return <div className="space-y-5"><div className="grid gap-5 lg:grid-cols-[1.25fr_0.75fr]"><div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={Bot} title="Agent status" meta="Autonomous revenue agent" /><div className="flex flex-col gap-6 p-5 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-4"><div className={`flex size-12 items-center justify-center rounded-full ${live ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}><Bot className="size-6" /></div><div><p className="font-medium">{live ? "Agent is live" : "Agent is paused"}</p><p className="mt-1 max-w-md text-sm text-muted-foreground">{live ? "Monitoring carts and assisting customers within your configured guardrails." : "No new autonomous actions will be initiated until you resume."}</p></div></div><Button variant="outline" onClick={onToggle} className={live ? "text-warning" : "text-success"}>{live ? "Pause agent" : "Go live"}</Button></div></div><div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={Gauge} title="Policy health" /><div className="space-y-4 p-5"><div className="flex items-end justify-between"><span className="text-sm text-muted-foreground">Actions within policy</span><span className="text-2xl font-semibold tabular-nums">99.2%</span></div><div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full w-[99.2%] rounded-full bg-success" /></div><p className="text-xs text-muted-foreground">12 actions held for merchant review today</p></div></div></div><div className="grid gap-5 lg:grid-cols-2"><LimitsPanel /><RecentActions /></div></div>;
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-5 lg:grid-cols-[1.25fr_0.75fr]">
+        <div className="border border-border bg-card shadow-[var(--shadow-panel)]">
+          <PanelHeader icon={Bot} title="Agent status" meta="Autonomous revenue agent" />
+          <div className="flex flex-col gap-6 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-4">
+              <div className={`flex size-12 items-center justify-center rounded-full ${live ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>
+                <Bot className="size-6" />
+              </div>
+              <div>
+                <p className="font-medium">{live ? "Agent is live" : "Agent is paused"}</p>
+                <p className="mt-1 max-w-md text-sm text-muted-foreground">
+                  {live ? "Monitoring carts and assisting customers within your configured guardrails." : "No new autonomous actions will be initiated until you resume."}
+                </p>
+              </div>
+            </div>
+            <Button variant="outline" onClick={onToggle} className={live ? "text-warning" : "text-success"}>
+              {live ? "Pause agent" : "Go live"}
+            </Button>
+          </div>
+        </div>
+        <div className="border border-border bg-card shadow-[var(--shadow-panel)]">
+          <PanelHeader icon={Gauge} title="Policy health" />
+          <div className="space-y-4 p-5">
+            <div className="flex items-end justify-between">
+              <span className="text-sm text-muted-foreground">Actions within policy</span>
+              <span className="text-2xl font-semibold tabular-nums">99.2%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div className="h-full w-[99.2%] rounded-full bg-success" />
+            </div>
+            <p className="text-xs text-muted-foreground">12 actions held for merchant review today</p>
+          </div>
+        </div>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <LimitsPanel />
+          <RecentActions />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function LimitsPanel() {
-  return <div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={Settings2} title="Operating limits" meta="Applied instantly" /><div className="space-y-5 p-5"><Limit label="Max order value" value="₹25,000" hint="Orders above this value require review" min="5000" max="50000" progress="40%" /><Limit label="Max payment retries" value="3 attempts" hint="Stops after the third gateway failure" min="1" max="5" progress="50%" /><Limit label="Upsell threshold" value="12% intent" hint="Minimum confidence before a recommendation" min="5" max="25" progress="35%" /></div></div>;
+  const [maxOrderValue, setMaxOrderValue] = useState(25000);
+  const [maxRetries, setMaxRetries] = useState(3);
+  const [upsellThreshold, setUpsellThreshold] = useState(12);
+
+  return (
+    <div className="border border-border bg-card shadow-[var(--shadow-panel)]">
+      <PanelHeader icon={Settings2} title="Operating limits" meta="Applied instantly" />
+      <div className="space-y-5 p-5">
+        <Limit label="Max order value" value={maxOrderValue} onChange={setMaxOrderValue} hint="Orders above this value require review" min={5000} max={50000} step={500} />
+        <Limit label="Max payment retries" value={maxRetries} onChange={setMaxRetries} hint="Stops after the third gateway failure" min={1} max={5} step={1} />
+        <Limit label="Upsell threshold" value={upsellThreshold} onChange={setUpsellThreshold} hint="Minimum confidence before a recommendation" min={5} max={25} step={1} />
+      </div>
+    </div>
+  );
 }
 
-function Limit({ label, value, hint, min, max, progress }: { label: string; value: string; hint: string; min: string; max: string; progress: string }) {
-  return <div><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium">{label}</p><p className="mt-1 text-xs text-muted-foreground">{hint}</p></div><span className="shrink-0 border border-border bg-muted/30 px-2 py-1 text-xs font-medium tabular-nums">{value}</span></div><input className="mt-4 h-1.5 w-full cursor-pointer accent-primary" type="range" min={min} max={max} defaultValue={Number(min) + Math.round((Number(max) - Number(min)) * parseInt(progress) / 100)} aria-label={label} /><div className="mt-1 flex justify-between text-[10px] text-muted-foreground"><span>{min === "5000" ? "₹5,000" : min === "1" ? "1" : "5%"}</span><span>{max === "50000" ? "₹50,000" : max === "5" ? "5" : "25%"}</span></div></div>;
+function Limit({
+  label,
+  value,
+  onChange,
+  hint,
+  min,
+  max,
+  step,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  hint: string;
+  min: number;
+  max: number;
+  step: number;
+}) {
+  const clampedValue = Math.min(max, Math.max(min, value));
+  const displayValue = label.includes("order") ? formatCurrency(clampedValue) : label.includes("retries") ? `${clampedValue} attempt${clampedValue === 1 ? "" : "s"}` : `${clampedValue}% intent`;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">{label}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs font-medium tabular-nums"
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            value={clampedValue}
+            onChange={(event) => onChange(Math.min(max, Math.max(min, Number(event.target.value) || min)))}
+            aria-label={label}
+          />
+          <span className="hidden shrink-0 border border-border bg-muted/30 px-2 py-1 text-[11px] font-medium tabular-nums md:inline-flex">{displayValue}</span>
+        </div>
+      </div>
+      <input className="mt-4 h-1.5 w-full cursor-pointer accent-primary" type="range" min={min} max={max} step={step} value={clampedValue} onChange={(event) => onChange(Number(event.target.value))} aria-label={label} />
+      <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
+        <span>{label.includes("order") ? formatCurrency(min) : label.includes("retries") ? `${min}` : `${min}%`}</span>
+        <span>{label.includes("order") ? formatCurrency(max) : label.includes("retries") ? `${max}` : `${max}%`}</span>
+      </div>
+    </div>
+  );
 }
 
-function RecentActions() { return <div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={Activity} title="Last 5 actions" action="View audit" /><div className="divide-y divide-border">{actions.slice(0, 5).map((item) => <div key={item.time} className="flex items-center justify-between px-5 py-3"><div className="flex items-center gap-2.5"><span className="size-1.5 rounded-full bg-success" /><span className="text-xs">{item.detail}</span></div><span className="text-[11px] tabular-nums text-muted-foreground">{item.time}</span></div>)}</div></div>; }
+function RecentActions() {
+  return (
+    <div className="border border-border bg-card shadow-[var(--shadow-panel)]">
+      <PanelHeader icon={Activity} title="Last 5 actions" action="View audit" />
+      <div className="divide-y divide-border">
+        {recentActionSeed.map((item) => (
+          <div key={item.time} className="flex items-center justify-between px-5 py-3">
+            <div className="flex items-center gap-2.5">
+              <span className="size-1.5 rounded-full bg-success" />
+              <span className="text-xs">{item.detail}</span>
+            </div>
+            <span className="text-[11px] tabular-nums text-muted-foreground">{item.time}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function CheckoutSimulation() {
   const [step, setStep] = useState(1);
+  const [transactionDialogOpen, setTransactionDialogOpen] = useState(false);
   const [agentSuggestion, setAgentSuggestion] = useState({
     item: "Handcrafted dupatta",
     price: 399,
@@ -546,14 +1204,14 @@ function CheckoutSimulation() {
         }
 
         const logs = await fetchAuditLogs();
-        const suggestion = [...(logs.logs || [])].reverse().find((entry: any) => entry?.action === "analyze_cart")?.outputs?.suggestion;
+        const suggestion = [...(logs.logs || [])].find((entry: DashboardLog) => entry?.action === "analyze_cart")?.outputs?.suggestion;
 
         if (!active) return;
-        if (suggestion && suggestion.item) {
+        if (suggestion?.item) {
           setAgentSuggestion({
-            item: suggestion.item,
+            item: cleanDisplayText(suggestion.item, "Handcrafted dupatta"),
             price: Number(suggestion.price || 399),
-            reason: suggestion.reason || "Adds a complementary festive finish to the current outfit.",
+            reason: cleanDisplayText(suggestion.reason, "Adds a complementary festive finish to the current outfit."),
           });
           return;
         }
@@ -571,44 +1229,217 @@ function CheckoutSimulation() {
     }
 
     loadSuggestion();
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, []);
 
-  return <div className="grid gap-5 xl:grid-cols-[1fr_0.8fr_0.85fr]"><div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={ShoppingBag} title="Customer cart" meta="Simulation · #ZA-10482" /><div className="divide-y divide-border">{[{ name: "Hand-block printed kurta", detail: "Indigo · M", price: "₹2,499", qty: 1 }, { name: "Chanderi silk dupatta", detail: "Fuchsia · One size", price: "₹1,299", qty: 1 }, { name: "Cotton straight pants", detail: "Ivory · M", price: "₹1,799", qty: 1 }].map((product) => <div key={product.name} className="flex items-center gap-3 p-4"><div className="flex size-12 items-center justify-center rounded border border-border bg-muted"><Package className="size-5 text-muted-foreground" /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{product.name}</p><p className="mt-1 text-xs text-muted-foreground">{product.detail} · Qty {product.qty}</p></div><span className="text-sm font-medium tabular-nums">{product.price}</span></div>)}</div><div className="space-y-2 border-t border-border p-4 text-sm"><div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">₹5,597</span></div><div className="flex justify-between text-muted-foreground"><span>Agent discount</span><span className="tabular-nums text-success">−₹300</span></div><div className="flex justify-between border-t border-border pt-3 font-semibold"><span>Total</span><span className="tabular-nums">₹5,297</span></div></div></div><div className="border border-primary/30 bg-primary/5 shadow-[var(--shadow-panel)]"><PanelHeader icon={Sparkles} title="Agent suggestion" meta="Confidence 94%" /><div className="p-5"><div className="flex items-center gap-2 text-xs font-medium text-primary"><Target className="size-4" /> Personalised for this cart</div><h2 className="mt-5 text-xl font-semibold tracking-tight">{agentSuggestion.item}</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">{agentSuggestion.reason}</p><div className="mt-6 flex items-end justify-between gap-3"><div><p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Suggested add-on</p><p className="mt-2 text-2xl font-semibold tabular-nums">₹{agentSuggestion.price.toLocaleString("en-IN")}</p></div><Button variant="outline" className="h-9 border-primary/30 text-primary hover:bg-primary/5">Add to cart</Button></div></div></div><PaymentTracker step={step} onStep={setStep} /></div>;
+  return (
+    <>
+      <div className="grid gap-5 xl:grid-cols-[1fr_0.8fr_0.85fr]">
+        <div className="border border-border bg-card shadow-[var(--shadow-panel)]">
+          <PanelHeader icon={ShoppingBag} title="Customer cart" meta="Simulation · #ZA-10482" />
+          <div className="divide-y divide-border">
+            {[
+              { name: "Hand-block printed kurta", detail: "Indigo · M", price: "₹2,499", qty: 1 },
+              { name: "Chanderi silk dupatta", detail: "Fuchsia · One size", price: "₹1,299", qty: 1 },
+              { name: "Cotton straight pants", detail: "Ivory · M", price: "₹1,799", qty: 1 },
+            ].map((product) => (
+              <div key={product.name} className="flex items-center gap-3 p-4">
+                <div className="flex size-12 items-center justify-center rounded border border-border bg-muted">
+                  <Package className="size-5 text-muted-foreground" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{product.name}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{product.detail} · Qty {product.qty}</p>
+                </div>
+                <span className="text-sm font-medium tabular-nums">{product.price}</span>
+              </div>
+            ))}
+          </div>
+          <div className="space-y-2 border-t border-border p-4 text-sm">
+            <div className="flex justify-between text-muted-foreground">
+              <span>Subtotal</span>
+              <span className="tabular-nums">₹5,597</span>
+            </div>
+            <div className="flex justify-between text-muted-foreground">
+              <span>Agent discount</span>
+              <span className="tabular-nums text-success">-₹300</span>
+            </div>
+            <div className="flex justify-between border-t border-border pt-3 font-semibold">
+              <span>Total</span>
+              <span className="tabular-nums">₹5,297</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="border border-primary/30 bg-primary/5 shadow-[var(--shadow-panel)]">
+          <PanelHeader icon={Sparkles} title="Agent suggestion" meta="Confidence 94%" />
+          <div className="p-5">
+            <div className="flex items-center gap-2 text-xs font-medium text-primary">
+              <Target className="size-4" /> Personalised for this cart
+            </div>
+            <h2 className="mt-5 text-xl font-semibold tracking-tight">{cleanDisplayText(agentSuggestion.item, "Handcrafted dupatta")}</h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{cleanDisplayText(agentSuggestion.reason, "Adds a complementary festive finish to the current outfit.")}</p>
+            <div className="mt-6 flex items-end justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Suggested add-on</p>
+                <p className="mt-2 text-2xl font-semibold tabular-nums">{formatCurrency(agentSuggestion.price)}</p>
+              </div>
+              <Button variant="outline" className="h-9 border-primary/30 text-primary hover:bg-primary/5">
+                Add to cart
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <PaymentTracker
+          step={step}
+          onStep={(nextStep) => {
+            setStep(nextStep);
+            if (nextStep >= 3) {
+              setTransactionDialogOpen(true);
+              toast.success("Transaction completed successfully");
+            }
+          }}
+        />
+      </div>
+
+      <Dialog open={transactionDialogOpen} onOpenChange={setTransactionDialogOpen}>
+        <DialogContent className="border-border bg-card sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>Payment captured</DialogTitle>
+            <DialogDescription>The order has been successfully created and logged in the audit trail.</DialogDescription>
+          </DialogHeader>
+          <div className="rounded border border-success/30 bg-success/5 p-4 text-sm text-foreground">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Amount</span>
+              <span className="text-lg font-semibold tabular-nums">₹5,297</span>
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Status</span>
+              <span className="inline-flex items-center gap-2 font-medium text-success">
+                <Check className="size-4" /> Completed
+              </span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setTransactionDialogOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
 }
 
 function PaymentTracker({ step, onStep }: { step: number; onStep: (step: number) => void }) {
-  const steps = [{ label: "Pending", icon: Clock3 }, { label: "Captured", icon: ReceiptIndianRupee }, { label: "Logged", icon: FileClock }];
-  return <div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={ReceiptIndianRupee} title="Payment status" meta="₹5,297" /><div className="p-5"><div className="space-y-0">{steps.map((item, index) => { const Icon = item.icon; const complete = index < step; const current = index === step; return <div key={item.label} className="flex gap-3"><div className="flex flex-col items-center"><div className={`flex size-8 items-center justify-center rounded-full border ${complete ? "border-success bg-success text-background" : current ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>{complete ? <Check className="size-4" /> : <Icon className="size-4" />}</div>{index < steps.length - 1 && <div className={`my-1 h-8 w-px ${complete ? "bg-success" : "bg-border"}`} />}</div><div className="pt-1"><p className={`text-sm font-medium ${current ? "text-foreground" : complete ? "text-success" : "text-muted-foreground"}`}>{item.label}</p><p className="mt-1 text-xs text-muted-foreground">{index === 0 ? "Awaiting customer confirmation" : index === 1 ? "Razorpay payment captured" : "Decision added to audit trail"}</p></div></div>; })}</div><Button variant="outline" className="mt-6 w-full" disabled={step >= 3} onClick={() => onStep(Math.min(step + 1, 3))}>{step === 1 ? "Capture payment" : step === 2 ? "Log transaction" : "Transaction complete"}{step < 3 && <ChevronRight />}</Button><p className="mt-3 text-center text-[11px] text-muted-foreground">Test mode · No real payment will be processed</p></div></div>;
+  const steps = [
+    { label: "Pending", icon: Clock3 },
+    { label: "Captured", icon: ReceiptIndianRupee },
+    { label: "Logged", icon: FileClock },
+  ];
+
+  return (
+    <div className="border border-border bg-card shadow-[var(--shadow-panel)]">
+      <PanelHeader icon={ReceiptIndianRupee} title="Payment status" meta="₹5,297" />
+      <div className="p-5">
+        <div className="space-y-0">
+          {steps.map((item, index) => {
+            const Icon = item.icon;
+            const complete = index < step;
+            const current = index === step;
+
+            return (
+              <div key={item.label} className="flex gap-3">
+                <div className="flex flex-col items-center">
+                  <div className={`flex size-8 items-center justify-center rounded-full border ${complete ? "border-success bg-success text-background" : current ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>
+                    {complete ? <Check className="size-4" /> : <Icon className="size-4" />}
+                  </div>
+                  {index < steps.length - 1 && <div className={`my-1 h-8 w-px ${complete ? "bg-success" : "bg-border"}`} />}
+                </div>
+                <div className="pt-1">
+                  <p className={`text-sm font-medium ${current ? "text-foreground" : complete ? "text-success" : "text-muted-foreground"}`}>{item.label}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {index === 0 ? "Awaiting customer confirmation" : index === 1 ? "Razorpay payment captured" : "Decision added to audit trail"}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <Button variant="outline" className="mt-6 w-full" disabled={step >= 3} onClick={() => onStep(Math.min(step + 1, 3))}>
+          {step === 1 ? "Capture payment" : step === 2 ? "Log transaction" : "Transaction complete"}
+          {step < 3 && <ChevronRight />}
+        </Button>
+        <p className="mt-3 text-center text-[11px] text-muted-foreground">Test mode · No real payment will be processed</p>
+      </div>
+    </div>
+  );
 }
 
-function AuditTrail({ searchTerm = "" }: { searchTerm?: string }) {
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
-
-  useEffect(() => {
-    fetchAuditLogs().then((d) => setAuditLogs(d.logs || [])).catch(() => {});
-  }, []);
-
-  const displayLogs = (auditLogs.length > 0 ? auditLogs : [...auditEntries]).filter((e) =>
-    !searchTerm ||
-    e.label?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    e.action?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    e.reason?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+function AuditTrail({
+  logs,
+  searchTerm = "",
+  onSelectEntry,
+  onClear,
+}: {
+  logs: DashboardLog[];
+  searchTerm?: string;
+  onSelectEntry?: (entry: DashboardLog) => void;
+  onClear: () => void;
+}) {
+  const baseLogs = logs.length > 0 ? logs : auditSeed;
+  const normalizedTerm = searchTerm.trim().toLowerCase();
+  const displayLogs = baseLogs.filter((entry) => !normalizedTerm || buildSearchText(entry).includes(normalizedTerm));
 
   function handleExport() {
-    const data = displayLogs.map((e) => ({
-      timestamp: e.time || e.timestamp || '',
-      action: e.label || e.action || '',
-      reason: e.reason || '',
-      outcome: e.error ? 'failed' : 'success'
+    const rows = displayLogs.map((entry) => ({
+      timestamp: entry.time || entry.timestamp || "",
+      action: getEntryLabel(entry),
+      reason: getEntryReason(entry),
+      outcome: getEntryOutcome(entry),
     }));
-    const csv = ["Timestamp,Action,Reason,Outcome", ...data.map((r) => `${r.timestamp},\"${r.action}\",\"${r.reason}\",${r.outcome}`)].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
+    const csv = ["Timestamp,Action,Reason,Outcome", ...rows.map((row) => `${row.timestamp},"${row.action.replace(/"/g, '""')}","${row.reason.replace(/"/g, '""')}","${row.outcome}"`)].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `audit-log-${new Date().toISOString().slice(0,10)}.csv`;
-    a.click(); URL.revokeObjectURL(url);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
-  return <div className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={FileClock} title="All agent decisions" meta={`${displayLogs.length} events today`} action="Export log" onAction={handleExport} /><div className="hidden grid-cols-[120px_180px_1fr_120px] gap-4 border-b border-border bg-muted/30 px-5 py-3 text-[11px] font-medium text-muted-foreground md:grid"><span>Timestamp</span><span>Decision</span><span>Reason</span><span>Outcome</span></div><div className="divide-y divide-border">{displayLogs.map((entry, i) => <div key={i} className="grid gap-2 px-5 py-4 md:grid-cols-[120px_180px_1fr_120px] md:items-center md:gap-4"><span className="text-xs tabular-nums text-muted-foreground">{entry.time || entry.timestamp?.split('T')[1]?.slice(0, 8) || ''}</span><span className="text-sm font-medium">{entry.label || entry.action || ''}</span><span className="text-xs leading-relaxed text-muted-foreground">{entry.reason || ''}</span><span className="flex items-center gap-1.5 text-xs text-success"><Check className="size-3.5" /> Recorded</span></div>)}</div></div>; }
+  return (
+    <div className="border border-border bg-card shadow-[var(--shadow-panel)]">
+      <PanelHeader icon={FileClock} title="All agent decisions" meta={`${displayLogs.length} events today`} action="Export log" onAction={handleExport} secondaryAction="Clear" onSecondaryAction={onClear} />
+      <div className="hidden grid-cols-[120px_180px_1fr_120px] gap-4 border-b border-border bg-muted/30 px-5 py-3 text-[11px] font-medium text-muted-foreground md:grid">
+        <span>Timestamp</span>
+        <span>Decision</span>
+        <span>Reason</span>
+        <span>Outcome</span>
+      </div>
+      <div className="divide-y divide-border">
+        {displayLogs.length === 0 ? (
+          <div className="px-5 py-8 text-center text-sm text-muted-foreground">No matching audit entries found.</div>
+        ) : (
+          displayLogs.map((entry) => (
+            <button
+              key={getEntryId(entry)}
+              type="button"
+              className="grid w-full gap-2 bg-transparent px-5 py-4 text-left transition-colors hover:bg-muted/30 md:grid-cols-[120px_180px_1fr_120px] md:items-center md:gap-4"
+              onClick={() => onSelectEntry?.(entry)}
+            >
+              <span className="text-xs tabular-nums text-muted-foreground">{getEntryTime(entry)}</span>
+              <span className="text-sm font-medium text-foreground">{getEntryLabel(entry)}</span>
+              <span className="text-xs leading-relaxed text-muted-foreground">{getEntryReason(entry)}</span>
+              <span className={`flex items-center gap-1.5 text-xs ${getEntryOutcomeClass(entry)}`}>
+                <Check className="size-3.5" />
+                {getEntryOutcome(entry)}
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}

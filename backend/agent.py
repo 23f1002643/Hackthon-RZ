@@ -11,6 +11,7 @@ Also exposes `run_full_flow` to run the end-to-end checkout simulation.
 """
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -29,10 +30,41 @@ _nvidia_client = OpenAI(
 ) if _nvidia_api_key else None
 
 
+def _clean_copy_text(value: Any, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+
+    # Strip model / provider fallback noise before rendering it in the UI.
+    text = re.sub(r"\(fallback:.*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"error code:\s*\d+.*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\{.*$", "", text).strip().strip("\"'")
+    text = re.sub(r"\s+", " ", text).strip(" ,.;:-")
+    return text or fallback
+
+
+def _normalize_suggestion(llm_result: Dict[str, Any]) -> Dict[str, Any]:
+    fallback_item = "Handcrafted dupatta"
+    fallback_reason = "Adds a complementary festive finish to the current outfit."
+
+    try:
+        price = float(llm_result.get("price", 399) or 399)
+    except Exception:
+        price = 399.0
+
+    price = min(max(price, 199.0), 1499.0)
+
+    return {
+        "item": _clean_copy_text(llm_result.get("item"), fallback_item),
+        "price": price,
+        "reason": _clean_copy_text(llm_result.get("reason"), fallback_reason),
+    }
+
+
 def _llm_analyze(cart_items, total) -> dict:
     """Call NVIDIA LLM to analyze cart and generate upsell suggestion with reason."""
     if not _nvidia_client:
-        return {"item": "handcrafted dupatta", "price": 399, "reason": "NVIDIA_API_KEY not set — using fallback suggestion"}
+        return {"item": "handcrafted dupatta", "price": 399, "reason": "A complementary ethnic accessory pairs well with this outfit."}
 
     cart_str = ", ".join([f"{i.get('name')} x{i.get('qty', 1)} @ ₹{i.get('price')}" for i in cart_items])
     prompt = f"""You are an AI commerce agent for Zephyr Apparel, an ethnic wear brand.
@@ -57,11 +89,11 @@ Respond ONLY in this JSON format (no markdown, no extra text):
         )
         text = resp.choices[0].message.content.strip()
         return json.loads(text)
-    except Exception as e:
+    except Exception:
         return {
             "item": "handcrafted dupatta",
             "price": 399,
-            "reason": f"Complementary ethnic accessory (fallback: {str(e)[:40]})",
+            "reason": "A complementary ethnic accessory pairs well with this outfit.",
         }
 
 
@@ -101,9 +133,8 @@ class CommerceAgent:
         self.state.cart = cart_items
         total = sum(float(i.get("price", 0)) * int(i.get("qty", 1)) for i in cart_items)
 
-        llm_result = _llm_analyze(cart_items, total)
-        suggestion = {"item": llm_result.get("item"), "price": float(llm_result.get("price", 399))}
-        reason = llm_result.get("reason", "AI-generated upsell recommendation")
+        suggestion = _normalize_suggestion(_llm_analyze(cart_items, total))
+        reason = suggestion["reason"]
 
         outputs = {"total": total, "suggestion": suggestion}
         return self.log_action("analyze_cart", {"cart": cart_items}, outputs, reason=reason)
