@@ -19,6 +19,7 @@ class ShopSearchRequest(BaseModel):
 class CreateCartRequest(BaseModel):
     budget: Optional[int] = Field(default=None, ge=0, le=1_000_000)
     ai_assisted: bool = False
+    customer_id: Optional[int] = Field(default=None, ge=1)
 
 
 class AddItemRequest(BaseModel):
@@ -37,10 +38,33 @@ class CustomerIn(BaseModel):
     contact: Optional[str] = Field(default=None, max_length=32)
 
 
+class ProductIn(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    category: str = Field(min_length=2, max_length=64)
+    subcategory: str = Field(default="", max_length=64)
+    brand: str = Field(default="", max_length=96)
+    price: int = Field(ge=0, le=10_000_000)
+    currency: str = Field(default="INR", min_length=3, max_length=8)
+    stock: int = Field(default=0, ge=0, le=1_000_000)
+    image_url: str = Field(default="", max_length=2000)
+    rating: float = Field(default=0, ge=0, le=5)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    occasion: list[str] = Field(default_factory=list, max_length=20)
+    gender: str = Field(default="unisex", max_length=16)
+    source_url: str = Field(default="", max_length=2000)
+    active: bool = True
+
+
+class CustomerRequest(CustomerIn):
+    pass
+
+
 class CreateOrderRequest(BaseModel):
     cart_id: int
     confirmed: bool = False
     customer: Optional[CustomerIn] = None
+    customer_id: Optional[int] = Field(default=None, ge=1)
 
 
 class VerifyPaymentRequest(BaseModel):

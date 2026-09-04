@@ -100,6 +100,19 @@ _CATEGORY_KEYWORDS = {
     "Footwear": ["juttis", "jutti", "shoes", "footwear", "mojari", "sandals"],
 }
 
+_GREETING_WORDS = {"hi", "hii", "hello", "hey", "thanks", "thank you", "good morning", "good evening", "good afternoon"}
+_SHOPPING_SIGNALS = set(sum(_OCCASION_KEYWORDS.values(), []) + sum(_CATEGORY_KEYWORDS.values(), []) + ["buy", "find", "need", "looking", "show", "want", "under", "budget", "price", "₹", "rs"])
+
+
+def classify_message(query: str) -> str:
+    """Classify conversational input before any catalog retrieval occurs."""
+    normalized = re.sub(r"[^a-z0-9₹ ]+", " ", (query or "").lower()).strip()
+    if normalized in _GREETING_WORDS or len(normalized.split()) <= 2 and normalized in _GREETING_WORDS:
+        return "greeting"
+    if any(signal in normalized for signal in _SHOPPING_SIGNALS):
+        return "shopping"
+    return "unclear"
+
 
 def _deterministic_intent(query: str) -> Dict[str, Any]:
     q = (query or "").lower()
@@ -133,7 +146,7 @@ def _deterministic_intent(query: str) -> Dict[str, Any]:
             break
 
     return {
-        "intent": "shopping",
+        "intent": "shopping" if classify_message(query) == "shopping" else classify_message(query),
         "occasion": occasion,
         "recipient": recipient,
         "category": category,

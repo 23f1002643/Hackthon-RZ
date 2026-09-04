@@ -10,7 +10,7 @@ import os
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 # SQLite file lives next to the backend package so it is easy to find and reset.
@@ -39,6 +39,24 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    # Keep the single-file demo compatible when additive model fields are added.
+    inspector = inspect(engine)
+    product_columns = {column["name"] for column in inspector.get_columns("products")}
+    additions = {
+        "source": "VARCHAR(32) DEFAULT 'seed'",
+        "source_url": "TEXT DEFAULT ''",
+        "external_product_id": "VARCHAR(160)",
+        "reviews_count": "INTEGER DEFAULT 0",
+        "color": "VARCHAR(64) DEFAULT ''",
+        "material": "VARCHAR(96) DEFAULT ''",
+        "style": "VARCHAR(96) DEFAULT ''",
+        "season": "VARCHAR(64) DEFAULT ''",
+        "imported_at": "DATETIME",
+    }
+    with engine.begin() as connection:
+        for name, definition in additions.items():
+            if name not in product_columns:
+                connection.execute(text(f"ALTER TABLE products ADD COLUMN {name} {definition}"))
 
 
 @contextmanager

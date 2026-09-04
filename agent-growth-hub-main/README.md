@@ -41,6 +41,7 @@ flowchart LR
 - **Cart/order services:** authoritative prices, totals, inventory checks, order state, and idempotency.
 - **Policy engine:** maximum order value, maximum upsell value, budget, inventory, discount, and confirmation rules.
 - **Razorpay:** payment execution in Test Mode.
+- **Bright Data ingestion:** backend-only catalog import that normalizes external products into SQLite; shoppers never call Bright Data during search.
 - **Audit and metrics:** explainability and merchant reporting derived from persisted events and verified orders.
 
 The browser never supplies an authoritative amount. The LLM never creates products, chooses final prices, marks payments as successful, or changes inventory.
@@ -55,6 +56,7 @@ backend/
   seed.py              Deterministic demo database seeding/reset
   seed_products.py     Vastra Studio catalog and relations
   catalog.py           Search, inventory, and related-product services
+  brightdata.py        Bright Data normalization and idempotent ingestion
   agent.py             Discovery state graph and deterministic fallback
   llm.py               NVIDIA-compatible reasoning boundary
   cart_service.py      Server-side cart and total calculation
@@ -103,6 +105,8 @@ NVIDIA_API_KEY=...
 NVIDIA_MODEL=meta/llama-3.1-70b-instruct
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 LLM_TIMEOUT_SECONDS=12
+BRIGHTDATA_API_KEY=
+BRIGHTDATA_API_URL=
 # DATABASE_URL=sqlite:///backend/commerce.db
 ```
 
@@ -160,6 +164,16 @@ Useful direct URLs:
 
 If Razorpay keys are not configured, discovery, catalog, cart, policy, and offline tests still work, but real Checkout cannot start.
 
+## Bright Data catalog ingestion
+
+Bright Data is an optional backend ingestion source. Configure `BRIGHTDATA_API_KEY` and `BRIGHTDATA_API_URL` in `backend/.env`, then trigger an import:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/catalog/import
+```
+
+The importer accepts a product list under `products`, `items`, `results`, or `data`. It normalizes names, prices, currency, stock, image/source URLs, brand, ratings, reviews, attributes, tags, and occasions. Imported rows are marked `source=brightdata` and deduplicated by external product id or name. Missing credentials or an unavailable service returns a useful error while the seeded SQLite catalog continues working.
+
 ## API reference
 
 All API responses use this envelope:
@@ -196,6 +210,7 @@ POST   /api/cart/{cart_id}/clear
 ```
 
 The client sends product ids and quantities only. Cart prices and totals come from the database.
+The buyer stores the demo customer id and active cart id locally so a refresh reconnects to the same server-side session.
 
 ### Orders and payments
 

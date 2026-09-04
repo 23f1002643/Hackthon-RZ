@@ -29,6 +29,7 @@ class ShopState(TypedDict, total=False):
     candidates: List[Dict[str, Any]]
     recommendation: Optional[Dict[str, Any]]
     upsell: Optional[Dict[str, Any]]
+    upsell_options: List[Dict[str, Any]]
     steps: List[Dict[str, str]]
 
 
@@ -40,6 +41,11 @@ CANDIDATE_LIMIT = 8
 # --------------------------------------------------------------------------- #
 def node_parse_intent(state: ShopState) -> Dict[str, Any]:
     query = state["query"]
+    message_type = llm.classify_message(query)
+    if message_type != "shopping":
+        intent = {"intent": message_type, "source": "deterministic", "preferences": [], "constraints": []}
+        steps = state.get("steps", []) + [{"key": "intent", "label": "Understanding your request", "status": "done"}]
+        return {"intent": intent, "steps": steps}
     intent = llm.parse_intent(query)
     record_event(
         state["db"],
@@ -55,6 +61,8 @@ def node_parse_intent(state: ShopState) -> Dict[str, Any]:
 
 def node_search_catalog(state: ShopState) -> Dict[str, Any]:
     db, intent = state["db"], state["intent"]
+    if intent.get("intent") != "shopping":
+        return {"candidates": [], "steps": state.get("steps", [])}
     products = catalog.search_products(
         db,
         query=state["query"],
@@ -103,8 +111,8 @@ def node_recommend(state: ShopState) -> Dict[str, Any]:
     candidates = state.get("candidates", [])
     steps = state.get("steps", []) + [{"key": "match", "label": "Finding your best match", "status": "done"}]
 
-    if not candidates:
-        return {"recommendation": None, "upsell": None, "steps": steps}
+    if intent.get("intent") != "shopping" or not candidates:
+        return {"recommendation": None, "upsell": None, "upsell_options": [], "steps": steps}
 
     budget = intent.get("budget")
     upsell_candidates = _upsell_pool(db, candidates, config, budget)
@@ -125,7 +133,8 @@ def node_recommend(state: ShopState) -> Dict[str, Any]:
     )
 
     # Resolve upsell deterministically under policy, using the LLM choice as a hint.
-    upsell = _resolve_upsell(db, config, primary, budget, rec, upsell_candidates)
+    upsell_options = _resolve_upsells(db, config, primary, budget, rec, upsell_candidates)
+    upsell = upsell_options[0] if upsell_options else None
     if upsell:
         record_event(
             db,
@@ -135,35 +144,43 @@ def node_recommend(state: ShopState) -> Dict[str, Any]:
             metadata={"product_id": upsell["product"]["id"], "reason": upsell["reason"]},
         )
 
-    return {"recommendation": recommendation, "upsell": upsell, "steps": steps}
+    return {"recommendation": recommendation, "upsell": upsell, "upsell_options": upsell_options, "steps": steps}
 
 
-def _resolve_upsell(
+def _resolve_upsells(
     db: Session,
     config: MerchantConfig,
     primary: Optional[Product],
     budget: Optional[int],
     rec: Dict[str, Any],
     upsell_candidates: List[Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     if primary is None:
-        return None
+        return []
     remaining = None if budget is None else max(0, budget - primary.price)
 
     def _valid(product: Product) -> bool:
         return policy.check_upsell(config, upsell_price=product.price, remaining_budget=remaining).allowed
 
-    # 1) Honour a policy-valid LLM upsell choice.
+    options: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+
+    # 1) Honour a policy-valid LLM upsell choice as the first option.
     if rec.get("upsell_product_id"):
         product = catalog.get_product(db, rec["upsell_product_id"])
         if product and product.id != primary.id and product.stock > 0 and _valid(product):
-            return {"product": product.to_dict(), "reason": rec.get("upsell_reason") or "Pairs beautifully with your selection."}
+            options.append({"product": product.to_dict(), "reason": rec.get("upsell_reason") or "Pairs beautifully with your selection."})
+            seen.add(product.id)
 
-    # 2) Deterministic fallback: best curated related item within policy/budget.
-    for product in catalog.get_related_products(db, primary.id, limit=6, max_price=config.max_upsell_value):
-        if product.id != primary.id and _valid(product):
-            return {"product": product.to_dict(), "reason": "Frequently paired with this piece and keeps you within budget."}
-    return None
+    # 2) Fill a short, curated suggestion rail from related products only.
+    for product in catalog.get_related_products(db, primary.id, limit=8, max_price=config.max_upsell_value):
+        if product.id == primary.id or product.id in seen or not _valid(product):
+            continue
+        options.append({"product": product.to_dict(), "reason": "Complements your selected outfit and stays within your budget."})
+        seen.add(product.id)
+        if len(options) >= 3:
+            break
+    return options
 
 
 # --------------------------------------------------------------------------- #
@@ -219,13 +236,20 @@ def run_discovery(db: Session, query: str, config: MerchantConfig) -> Dict[str, 
         final = _run_sequential(initial)
 
     intent = final.get("intent", {})
+    message_type = intent.get("intent", "unclear")
+    responses = {
+        "greeting": "Hi! Tell me what you are shopping for, including the occasion, style, or budget.",
+        "unclear": "I can help you shop. Tell me what you need, for whom, and your approximate budget.",
+    }
     return {
         "intent": {k: intent.get(k) for k in ("intent", "occasion", "recipient", "category", "budget", "gender", "preferences", "constraints")},
         "products": final.get("candidates", []),
         "recommendation": final.get("recommendation"),
         "upsell": final.get("upsell"),
+        "upsell_options": final.get("upsell_options", []),
         "steps": final.get("steps", []),
         "backend": _graph_backend,
+        "message": responses.get(message_type),
     }
 
 

@@ -24,6 +24,11 @@ export async function fetchNotifications() {
   return res.json();
 }
 
+export async function fetchCustomers() { return request('/api/customers'); }
+export async function fetchOrders() { return request('/api/orders'); }
+export async function fetchProducts(query = '') { return request(`/api/products?q=${encodeURIComponent(query)}&limit=100`); }
+export async function importCatalog() { return request('/api/catalog/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }); }
+
 async function request(path: string, init?: RequestInit) {
   const res = await fetch(`${BASE}${path}`, init);
   const payload = await res.json().catch(() => ({}));
@@ -31,12 +36,24 @@ async function request(path: string, init?: RequestInit) {
   return payload;
 }
 
-export async function createCart(budget?: number, aiAssisted = false) {
+export async function createCart(budget?: number, aiAssisted = false, customerId?: number) {
   return request('/api/cart', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ budget, ai_assisted: aiAssisted }),
+    body: JSON.stringify({ budget, ai_assisted: aiAssisted, customer_id: customerId }),
   });
+}
+
+export async function getCart(cartId: number) {
+  return request(`/api/cart/${cartId}`);
+}
+
+export async function getOrCreateCustomer(customer: { name: string; email: string; contact?: string }) {
+  return request('/api/customers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(customer) });
+}
+
+export async function fetchCustomerOrders(customerId: number) {
+  return request(`/api/customers/${customerId}/orders`);
 }
 
 export async function searchShop(query: string) {
@@ -49,6 +66,10 @@ export async function searchShop(query: string) {
 
 export async function addCartItem(cartId: number, productId: number, isUpsell = false) {
   return request(`/api/cart/${cartId}/items`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ product_id: productId, quantity: 1, is_upsell: isUpsell }) });
+}
+
+export async function removeCartItem(cartId: number, itemId: number) {
+  return request(`/api/cart/${cartId}/items/${itemId}`, { method: 'DELETE' });
 }
 
 export async function createOrder(cartId: number, confirmed: boolean) {
@@ -67,4 +88,4 @@ export async function toggleAgent(active: boolean) {
   return request('/api/agent/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }) });
 }
 
-export default { fetchAuditLogs, fetchMetrics, fetchChartData, fetchNotifications, createCart, searchShop, addCartItem, createOrder, verifyPayment, markPaymentFailed, toggleAgent };
+export default { fetchAuditLogs, fetchMetrics, fetchChartData, fetchNotifications, fetchCustomers, fetchOrders, fetchProducts, importCatalog, createCart, getCart, getOrCreateCustomer, fetchCustomerOrders, searchShop, addCartItem, removeCartItem, createOrder, verifyPayment, markPaymentFailed, toggleAgent };

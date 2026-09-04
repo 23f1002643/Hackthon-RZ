@@ -101,6 +101,15 @@ class Product(Base):
     occasion: Mapped[list] = mapped_column(JSON, default=list)  # list[str]
     gender: Mapped[str] = mapped_column(String(16), default="unisex")
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    source: Mapped[str] = mapped_column(String(32), default="seed")
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    external_product_id: Mapped[Optional[str]] = mapped_column(String(160), nullable=True, index=True)
+    reviews_count: Mapped[int] = mapped_column(Integer, default=0)
+    color: Mapped[str] = mapped_column(String(64), default="")
+    material: Mapped[str] = mapped_column(String(96), default="")
+    style: Mapped[str] = mapped_column(String(96), default="")
+    season: Mapped[str] = mapped_column(String(64), default="")
+    imported_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -121,6 +130,13 @@ class Product(Base):
             "tags": self.tags or [],
             "occasion": self.occasion or [],
             "gender": self.gender,
+            "source": self.source,
+            "source_url": self.source_url,
+            "reviews_count": self.reviews_count,
+            "color": self.color,
+            "material": self.material,
+            "style": self.style,
+            "season": self.season,
         }
 
 
@@ -148,6 +164,9 @@ class Customer(Base):
     razorpay_customer_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
+    def to_dict(self) -> dict:
+        return {"id": self.id, "name": self.name, "email": self.email, "contact": self.contact, "created_at": self.created_at.isoformat() if self.created_at else None}
+
 
 # --------------------------------------------------------------------------- #
 # Cart
@@ -167,6 +186,7 @@ class Cart(Base):
     items: Mapped[list["CartItem"]] = relationship(
         back_populates="cart", cascade="all, delete-orphan", order_by="CartItem.id"
     )
+    customer: Mapped[Optional["Customer"]] = relationship()
 
 
 class CartItem(Base):
@@ -215,6 +235,7 @@ class Order(Base):
     items: Mapped[list["OrderItem"]] = relationship(
         back_populates="order", cascade="all, delete-orphan", order_by="OrderItem.id"
     )
+    customer: Mapped[Optional["Customer"]] = relationship()
     payments: Mapped[list["Payment"]] = relationship(
         back_populates="order", cascade="all, delete-orphan", order_by="Payment.id"
     )

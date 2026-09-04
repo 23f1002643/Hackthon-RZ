@@ -24,8 +24,8 @@ class CartError(Exception):
         self.message = message
 
 
-def create_cart(db: Session, *, budget: Optional[int] = None, ai_assisted: bool = False) -> Cart:
-    cart = Cart(status=CartStatus.ACTIVE, budget=budget, ai_assisted=ai_assisted)
+def create_cart(db: Session, *, budget: Optional[int] = None, ai_assisted: bool = False, customer_id: Optional[int] = None) -> Cart:
+    cart = Cart(status=CartStatus.ACTIVE, budget=budget, ai_assisted=ai_assisted, customer_id=customer_id)
     db.add(cart)
     db.commit()
     db.refresh(cart)

@@ -34,10 +34,20 @@ def test_discovery_recommends_saree_with_earrings_upsell(db, config):
 
     assert result["upsell"] is not None
     assert result["upsell"]["product"]["name"] == "Pearl Drop Earrings"
+    assert 1 <= len(result["upsell_options"]) <= 3
+    assert result["upsell_options"][0]["product"]["name"] == "Pearl Drop Earrings"
 
     saree = result["recommendation"]["product"]["price"]
     earrings = result["upsell"]["product"]["price"]
     assert saree + earrings == 3098  # within the ₹4000 budget
+
+
+def test_greeting_does_not_recommend_a_product(db, config):
+    result = agent.run_discovery(db, "Hi", config)
+
+    assert result["intent"]["intent"] == "greeting"
+    assert result["recommendation"] is None
+    assert result["upsell_options"] == []
 
 
 def test_full_paid_flow_decrements_inventory(db, config, fake_razorpay, find_product):

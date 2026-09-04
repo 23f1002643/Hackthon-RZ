@@ -23,11 +23,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from . import agent, cart_service, catalog, llm, metrics, orders, razorpay_tools
+from . import agent, brightdata, cart_service, catalog, llm, metrics, orders, razorpay_tools
 from .audit import EventType, get_recent_events, record_event
 from .cart_service import CartError
 from .db import get_db, init_db
-from .models import DEMO_MERCHANT_ID, EventSource, MerchantConfig
+from .models import DEMO_MERCHANT_ID, EventSource, MerchantConfig, Customer, Order, OrderStatus, Product
 from .orders import OrderError
 from .schemas import (
     AddItemRequest,
@@ -39,6 +39,8 @@ from .schemas import (
     ShopSearchRequest,
     UpdateItemRequest,
     VerifyPaymentRequest,
+    CustomerRequest,
+    ProductIn,
 )
 from .seed import reset_and_seed, seed_all
 
@@ -215,6 +217,90 @@ async def get_categories(db: Session = Depends(get_db)):
     return ok({"categories": catalog.list_categories(db)})
 
 
+@app.post("/api/customers")
+async def create_or_get_customer(payload: CustomerRequest, db: Session = Depends(get_db)):
+    if not payload.email and not payload.contact:
+        return _error_response("CUSTOMER_IDENTITY_REQUIRED", "Provide an email or contact number for demo session identity.")
+    customer = None
+    if payload.email:
+        customer = db.query(Customer).filter(Customer.email == payload.email).first()
+    if customer is None and payload.contact:
+        customer = db.query(Customer).filter(Customer.contact == payload.contact).first()
+    if customer is None:
+        customer = Customer(name=payload.name or "Guest", email=payload.email, contact=payload.contact)
+        db.add(customer)
+    elif payload.name:
+        customer.name = payload.name
+    db.commit()
+    db.refresh(customer)
+    return ok({"customer": customer.to_dict()})
+
+
+@app.get("/api/customers")
+async def list_customers(db: Session = Depends(get_db)):
+    customers = db.query(Customer).order_by(Customer.created_at.desc()).all()
+    result = []
+    for customer in customers:
+        orders_for_customer = db.query(Order).filter(Order.customer_id == customer.id, Order.status.in_([OrderStatus.PAID, OrderStatus.COMPLETED])).all()
+        result.append({**customer.to_dict(), "order_count": len(orders_for_customer), "total_spend": sum(order.total for order in orders_for_customer), "ai_assisted_orders": sum(1 for order in orders_for_customer if order.ai_assisted), "last_order": orders_for_customer[-1].created_at.isoformat() if orders_for_customer else None})
+    return ok({"customers": result})
+
+
+@app.get("/api/customers/{customer_id}/orders")
+async def customer_orders(customer_id: int, db: Session = Depends(get_db)):
+    customer = db.get(Customer, customer_id)
+    if customer is None:
+        return _error_response("CUSTOMER_NOT_FOUND", "Customer not found.", status=404)
+    rows = db.query(Order).filter(Order.customer_id == customer_id).order_by(Order.created_at.desc()).all()
+    return ok({"customer": customer.to_dict(), "orders": [orders.serialize_order(order) for order in rows]})
+
+
+@app.get("/api/orders")
+async def list_orders(db: Session = Depends(get_db)):
+    rows = db.query(Order).order_by(Order.created_at.desc()).limit(200).all()
+    return ok({"orders": [orders.serialize_order(order) for order in rows]})
+
+
+@app.post("/api/catalog/import")
+async def import_catalog(payload: Optional[dict] = None, db: Session = Depends(get_db)):
+    try:
+        result = brightdata.import_catalog(db, payload=payload or None)
+    except brightdata.BrightDataError as exc:
+        return _error_response("CATALOG_IMPORT_FAILED", str(exc), status=502)
+    return ok({"import": result})
+
+
+@app.post("/api/products")
+async def create_product(payload: ProductIn, db: Session = Depends(get_db)):
+    product = Product(merchant_id=DEMO_MERCHANT_ID, **payload.model_dump())
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    return ok({"product": product.to_dict()})
+
+
+@app.patch("/api/products/{product_id}")
+async def update_product(product_id: int, payload: ProductIn, db: Session = Depends(get_db)):
+    product = catalog.get_product(db, product_id)
+    if product is None:
+        return _error_response("PRODUCT_NOT_FOUND", "Product not found.", status=404)
+    for key, value in payload.model_dump().items():
+        setattr(product, key, value)
+    db.commit()
+    db.refresh(product)
+    return ok({"product": product.to_dict()})
+
+
+@app.delete("/api/products/{product_id}")
+async def archive_product(product_id: int, db: Session = Depends(get_db)):
+    product = catalog.get_product(db, product_id)
+    if product is None:
+        return _error_response("PRODUCT_NOT_FOUND", "Product not found.", status=404)
+    product.active = False
+    db.commit()
+    return ok({"archived": True, "product_id": product_id})
+
+
 @app.post("/api/shop/search")
 async def shop_search(payload: ShopSearchRequest, db: Session = Depends(get_db)):
     config = _config(db)
@@ -238,6 +324,7 @@ async def shop_search(payload: ShopSearchRequest, db: Session = Depends(get_db))
                 "products": [p.to_dict() for p in products],
                 "recommendation": None,
                 "upsell": None,
+                "upsell_options": [],
                 "steps": [{"key": "catalog", "label": "Browsing catalog (agent paused)", "status": "done"}],
                 "backend": "paused",
             }
@@ -253,7 +340,7 @@ async def shop_search(payload: ShopSearchRequest, db: Session = Depends(get_db))
 # --------------------------------------------------------------------------- #
 @app.post("/api/cart")
 async def create_cart(payload: CreateCartRequest, db: Session = Depends(get_db)):
-    cart = cart_service.create_cart(db, budget=payload.budget, ai_assisted=payload.ai_assisted)
+    cart = cart_service.create_cart(db, budget=payload.budget, ai_assisted=payload.ai_assisted, customer_id=payload.customer_id)
     return ok({"cart": cart_service.serialize_cart(cart)})
 
 
@@ -310,7 +397,7 @@ async def clear_cart(cart_id: int, db: Session = Depends(get_db)):
 async def create_order(payload: CreateOrderRequest, db: Session = Depends(get_db)):
     config = _config(db)
     customer = payload.customer.model_dump() if payload.customer else None
-    order = orders.create_order(db, payload.cart_id, config, confirmed=payload.confirmed, customer=customer)
+    order = orders.create_order(db, payload.cart_id, config, confirmed=payload.confirmed, customer=customer, customer_id=payload.customer_id)
 
     record_event(
         db,

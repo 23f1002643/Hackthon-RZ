@@ -40,16 +40,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Toaster } from "@/components/ui/sonner";
-import { fetchAuditLogs, fetchChartData, fetchMetrics, fetchNotifications, searchShop, toggleAgent } from "@/lib/api";
+import { fetchAuditLogs, fetchChartData, fetchCustomers, fetchMetrics, fetchNotifications, fetchOrders, fetchProducts, importCatalog, searchShop, toggleAgent } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Revenue Intelligence | Zephyr Apparel" },
-      { name: "description", content: "A real-time commerce agent dashboard for Zephyr Apparel." },
-      { property: "og:title", content: "Revenue Intelligence | Zephyr Apparel" },
-      { property: "og:description", content: "A real-time commerce agent dashboard for Zephyr Apparel." },
+      { title: "Vastra Studio Merchant" },
+      { name: "description", content: "Vastra Studio merchant operations and AI commerce analytics." },
+      { property: "og:title", content: "Vastra Studio Merchant" },
+      { property: "og:description", content: "Vastra Studio merchant operations and AI commerce analytics." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -57,7 +57,7 @@ export const Route = createFileRoute("/")({
   component: Landing,
 });
 
-type ViewId = "overview" | "agent" | "checkout" | "audit";
+type ViewId = "overview" | "agent" | "orders" | "customers" | "catalog" | "audit";
 type DashboardLog = Record<string, any>;
 
 function Landing() {
@@ -85,19 +85,14 @@ function Landing() {
 const navItems: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "agent", label: "Agent control", icon: Bot },
-  { id: "checkout", label: "Checkout simulation", icon: ShoppingBag },
+  { id: "orders", label: "Orders", icon: ReceiptIndianRupee },
+  { id: "customers", label: "Customers", icon: ShoppingBag },
+  { id: "catalog", label: "Catalog", icon: Package },
   { id: "audit", label: "Audit trail", icon: FileClock },
 ];
 
-const auditSeed: DashboardLog[] = [
-  { time: "09:42:18", label: "Upsell accepted", reason: "Customer viewed size guide twice; paired accessory matched cart intent.", tone: "success" },
-  { time: "09:40:27", label: "Retry payment", reason: "Gateway returned a transient timeout; within the 3-attempt retry policy.", tone: "warning" },
-  { time: "09:35:46", label: "Order held", reason: "Order value crossed ₹25,000 max limit; merchant review required.", tone: "danger" },
-  { time: "09:32:11", label: "Coupon approved", reason: "Returning customer and cart total met the ₹2,000 threshold.", tone: "success" },
-];
-
-const notificationDismissedKey = "zephyr-notification-dismissed-ids";
-const auditDismissedKey = "zephyr-audit-dismissed-ids";
+const notificationDismissedKey = "vastra-notification-dismissed-ids";
+const auditDismissedKey = "vastra-audit-dismissed-ids";
 
 const actionLabels: Record<string, string> = {
   analyze_cart: "Cart analyzed",
@@ -342,16 +337,6 @@ export function Dashboard() {
     };
   }, [dismissedNotificationIds]);
 
-  async function runSimulation() {
-    try {
-      await searchShop("I need something festive under 4000");
-      toast.success("Live catalog discovery completed");
-    } catch (error) {
-      console.error("simulation failed", error);
-      toast.error(`Simulation error: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
   const viewTitle = useMemo(() => navItems.find((item) => item.id === view)?.label ?? "Overview", [view]);
   const visibleAuditLogs = useMemo(
     () => auditLogs.filter((entry) => !hiddenAuditIds.includes(getEntryId(entry))),
@@ -461,7 +446,7 @@ export function Dashboard() {
             <div className="hidden items-center gap-2 border-l border-border pl-4 sm:flex">
               <div className="flex size-8 items-center justify-center rounded-full bg-brand-gradient text-xs font-semibold text-primary-foreground">ZA</div>
               <div className="hidden text-left lg:block">
-                <p className="text-xs font-medium">Zephyr Apparel</p>
+                <p className="text-xs font-medium">Vastra Studio</p>
                 <p className="text-[11px] text-muted-foreground">Merchant workspace</p>
               </div>
             </div>
@@ -476,9 +461,8 @@ export function Dashboard() {
                 {view === "overview" ? "Revenue intelligence" : viewTitle}
               </h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                {view === "overview" && "Autonomous commerce performance for Zephyr Apparel."}
+                {view === "overview" && "Autonomous commerce performance for Vastra Studio."}
                 {view === "agent" && "Set the boundaries your agent must operate within."}
-                {view === "checkout" && "Walk through a live agent-assisted customer checkout."}
                 {view === "audit" && "A complete, reviewable record of every agent decision."}
               </p>
             </div>
@@ -487,11 +471,10 @@ export function Dashboard() {
               <Button
                 className="bg-brand-gradient text-primary-foreground shadow-sm hover:opacity-90"
                 onClick={async () => {
-                  await runSimulation();
-                  setView("checkout");
+                  window.location.href = "/shop";
                 }}
               >
-                <Play className="size-3.5" /> Run simulation
+                <Play className="size-3.5" /> Open buyer flow
               </Button>
             </div>
           </div>
@@ -517,7 +500,9 @@ export function Dashboard() {
             />
           )}
           {view === "agent" && <AgentControl live={agentLive} onToggle={() => setConfirmOpen(true)} logs={auditLogs} />}
-          {view === "checkout" && <CheckoutSimulation />}
+          {view === "orders" && <MerchantOrders />}
+          {view === "customers" && <MerchantCustomers />}
+          {view === "catalog" && <MerchantCatalog />}
           {view === "audit" && (
             <AuditTrail
               logs={visibleAuditLogs}
@@ -619,7 +604,7 @@ function Sidebar({ activeView, onNavigate }: { activeView: ViewId; onNavigate: (
       <div className="flex h-[68px] shrink-0 items-center border-b border-sidebar-border px-[18px]">
         <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-brand-gradient text-sm font-bold text-primary-foreground">Z</div>
         <div className="ml-3 whitespace-nowrap opacity-0 transition-opacity duration-150 group-hover/sidebar:opacity-100">
-          <p className="text-sm font-semibold text-sidebar-foreground">Zephyr</p>
+          <p className="text-sm font-semibold text-sidebar-foreground">Vastra</p>
           <p className="text-[10px] text-muted-foreground">Commerce agent</p>
         </div>
       </div>
@@ -1004,7 +989,7 @@ function AuditPreview({
   onOpenAudit?: () => void;
   onSelectEntry: (entry: DashboardLog) => void;
 }) {
-  const previewEntries = logs.length > 0 ? logs.slice(0, 4) : auditSeed;
+  const previewEntries = logs.slice(0, 4);
 
   return (
     <div className="overflow-hidden border border-border bg-card shadow-[var(--shadow-panel)]">
@@ -1379,7 +1364,7 @@ function AuditTrail({
   onSelectEntry?: (entry: DashboardLog) => void;
   onClear: () => void;
 }) {
-  const baseLogs = logs.length > 0 ? logs : auditSeed;
+  const baseLogs = logs;
   const normalizedTerm = searchTerm.trim().toLowerCase();
   const displayLogs = baseLogs.filter((entry) => !normalizedTerm || buildSearchText(entry).includes(normalizedTerm));
 
@@ -1433,4 +1418,36 @@ function AuditTrail({
       </div>
     </div>
   );
+}
+
+function MerchantOrders() {
+  const [orders, setOrders] = useState<any[]>([]);
+  useEffect(() => { fetchOrders().then((result) => setOrders(result.orders || [])).catch(() => setOrders([])); }, []);
+  return <section className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={ReceiptIndianRupee} title="Orders" meta={`${orders.length} recorded`} /><div className="divide-y divide-border">{orders.length === 0 ? <p className="p-6 text-sm text-muted-foreground">No orders yet. Completed Razorpay payments will appear here.</p> : orders.map((order) => <div key={order.id} className="grid gap-2 px-5 py-4 text-sm md:grid-cols-[150px_1fr_110px_130px]"><span className="font-medium">{order.order_number}</span><span>{order.customer?.name || "Guest"}<span className="ml-2 text-muted-foreground">{order.items?.map((item: any) => `${item.name} × ${item.quantity}`).join(", ")}</span></span><span className="font-medium">{formatCurrency(order.total)}</span><span className="text-xs text-success">{order.payment_status} · {order.status}</span></div>)}</div></section>;
+}
+
+function MerchantCustomers() {
+  const [customers, setCustomers] = useState<any[]>([]);
+  useEffect(() => { fetchCustomers().then((result) => setCustomers(result.customers || [])).catch(() => setCustomers([])); }, []);
+  return <section className="border border-border bg-card shadow-[var(--shadow-panel)]"><PanelHeader icon={ShoppingBag} title="Customers" meta={`${customers.length} demo identities`} /><div className="divide-y divide-border">{customers.length === 0 ? <p className="p-6 text-sm text-muted-foreground">Customers appear after a shopper starts a demo session.</p> : customers.map((customer) => <div key={customer.id} className="grid gap-2 px-5 py-4 text-sm md:grid-cols-[1fr_1fr_110px_140px]"><span className="font-medium">{customer.name}</span><span className="text-muted-foreground">{customer.email || customer.contact || "No contact"}</span><span>{customer.order_count} orders</span><span>{formatCurrency(customer.total_spend || 0)} spent</span></div>)}</div></section>;
+}
+
+function MerchantCatalog() {
+  const [products, setProducts] = useState<any[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [status, setStatus] = useState("");
+  useEffect(() => { fetchProducts().then((result) => setProducts(result.products || [])).catch(() => setProducts([])); }, []);
+  async function runImport() {
+    setImporting(true);
+    try {
+      const result = await importCatalog();
+      const summary = result.import;
+      setStatus(`${summary.created} created, ${summary.updated} updated, ${summary.skipped} skipped`);
+      const refreshed = await fetchProducts();
+      setProducts(refreshed.products || []);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Catalog import failed");
+    } finally { setImporting(false); }
+  }
+  return <section className="border border-border bg-card shadow-[var(--shadow-panel)]"><div className="flex items-center justify-between border-b border-border px-4 py-3.5"><div><h2 className="text-sm font-medium">Catalog</h2><p className="mt-1 text-xs text-muted-foreground">{products.length} local products · SQLite source of truth</p></div><Button size="sm" onClick={runImport} disabled={importing}>{importing ? "Importing..." : "Import Bright Data"}</Button></div>{status && <p className="border-b border-border bg-muted/30 px-5 py-3 text-xs text-muted-foreground">{status}</p>}<div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">{products.slice(0, 30).map((product) => <div key={product.id} className="border border-border p-4"><div className="flex items-center justify-between gap-2"><p className="truncate text-sm font-medium">{product.name}</p><span className="text-xs text-success">{product.stock} in stock</span></div><p className="mt-2 text-xs text-muted-foreground">{product.category} · {product.brand || "Unbranded"}</p><p className="mt-3 font-semibold">{formatCurrency(product.price)}</p></div>)}</div></section>;
 }

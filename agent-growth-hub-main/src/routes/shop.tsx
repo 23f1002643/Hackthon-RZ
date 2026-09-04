@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { ArrowRight, Check, ShoppingBag, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { addCartItem, createCart, createOrder, markPaymentFailed, searchShop, verifyPayment } from "@/lib/api";
+import { addCartItem, createCart, createOrder, fetchCustomerOrders, getCart, getOrCreateCustomer, markPaymentFailed, removeCartItem, searchShop, verifyPayment } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/shop")({ component: Shop });
@@ -11,6 +11,7 @@ type Discovery = {
   intent?: { budget?: number; occasion?: string };
   recommendation?: { product: { id: number; name: string; price: number; description: string; image_url?: string }; reason: string };
   upsell?: { product: { id: number; name: string; price: number }; reason: string };
+  upsell_options?: { product: { id: number; name: string; price: number; image_url?: string }; reason: string }[];
 };
 
 declare global {
@@ -29,6 +30,8 @@ function Shop() {
   const [cart, setCart] = useState<any>(null);
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const [customerId, setCustomerId] = useState<number | null>(null);
+  const [history, setHistory] = useState<any[]>([]);
 
   useEffect(() => {
     const script = document.createElement("script");
@@ -38,6 +41,17 @@ function Shop() {
     return () => script.remove();
   }, []);
 
+  useEffect(() => {
+    const stored = window.localStorage.getItem("vastra-demo-customer-id");
+    if (!stored) return;
+    const id = Number(stored);
+    if (!Number.isInteger(id)) return;
+    setCustomerId(id);
+    fetchCustomerOrders(id).then((result) => setHistory(result.orders || [])).catch(() => setHistory([]));
+    const storedCartId = Number(window.localStorage.getItem("vastra-demo-cart-id"));
+    if (Number.isInteger(storedCartId)) getCart(storedCartId).then((result) => setCart(result.cart)).catch(() => window.localStorage.removeItem("vastra-demo-cart-id"));
+  }, []);
+
   async function discover() {
     setLoading(true);
     setOrder(null);
@@ -45,7 +59,12 @@ function Shop() {
       const result = await searchShop(query);
       setDiscovery(result);
       if (result.recommendation?.product) {
-        const created = await createCart(result.intent?.budget, true);
+        const customer = await getOrCreateCustomer({ name: "Demo Shopper", email: "demo@vastrastudio.local" });
+        const id = customer.customer.id as number;
+        window.localStorage.setItem("vastra-demo-customer-id", String(id));
+        setCustomerId(id);
+        const created = await createCart(result.intent?.budget, true, id);
+        window.localStorage.setItem("vastra-demo-cart-id", String(created.cart.id));
         const added = await addCartItem(created.cart.id, result.recommendation.product.id);
         setCart(added.cart);
       }
@@ -64,6 +83,28 @@ function Shop() {
       toast.success("Added to your cart");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update the cart.");
+    }
+  }
+
+  async function removeItem(itemId: number) {
+    if (!cart) return;
+    try {
+      const result = await removeCartItem(cart.id, itemId);
+      setCart(result.cart);
+      toast.success("Removed from your cart");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not remove that item.");
+    }
+  }
+
+  async function addSuggestion(productId: number) {
+    if (!cart) return;
+    try {
+      const result = await addCartItem(cart.id, productId, true);
+      setCart(result.cart);
+      toast.success("Added to your cart");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not add that suggestion.");
     }
   }
 
@@ -86,7 +127,11 @@ function Shop() {
           try {
             const verified = await verifyPayment(result.order.id, response);
             setOrder(verified.order);
-            toast.success("Payment verified and order confirmed");
+                  toast.success("Payment verified and order confirmed");
+                  if (customerId) {
+                    const updated = await fetchCustomerOrders(customerId);
+                    setHistory(updated.orders || []);
+                  }
           } catch (error) {
             toast.error(error instanceof Error ? error.message : "Payment verification failed.");
           }
@@ -138,10 +183,16 @@ function Shop() {
               <div className="mt-6 border-l-2 border-primary pl-4 text-sm text-muted-foreground"><span className="font-medium text-foreground">Why this match? </span>{discovery?.recommendation?.reason}</div>
             </article>
           ) : <div className="border border-dashed border-border p-10 text-center text-sm text-muted-foreground">Your recommendation will appear here.</div>}
-          {discovery?.upsell && !cart?.items?.some((item: any) => item.product_id === discovery.upsell?.product.id) && <article className="flex items-center justify-between gap-4 border border-border bg-card p-5"><div><p className="text-xs font-medium uppercase tracking-[0.15em] text-primary">Complete the look</p><h3 className="mt-2 font-semibold">{discovery.upsell.product.name}</h3><p className="mt-1 text-sm text-muted-foreground">{discovery.upsell.reason}</p></div><Button variant="outline" onClick={addUpsell}>Add {money(discovery.upsell.product.price)}</Button></article>}
+          {(discovery?.upsell_options?.length || 0) > 0 && <section className="border border-border bg-card p-5"><p className="text-xs font-medium uppercase tracking-[0.15em] text-primary">Complete the look</p><h2 className="mt-2 text-lg font-semibold">Curated suggestions</h2><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{discovery?.upsell_options?.map((suggestion) => { const inCart = cart?.items?.some((item: any) => item.product_id === suggestion.product.id); return <article key={suggestion.product.id} className="border border-border p-4"><div className="flex h-20 items-center justify-center bg-muted text-primary"><ShoppingBag className="size-6" /></div><h3 className="mt-3 truncate text-sm font-semibold">{suggestion.product.name}</h3><p className="mt-1 text-xs text-muted-foreground">{suggestion.reason}</p><div className="mt-3 flex items-center justify-between gap-2"><span className="font-semibold">{money(suggestion.product.price)}</span><Button size="sm" variant="outline" disabled={inCart} onClick={() => addSuggestion(suggestion.product.id)}>{inCart ? "Added" : "Add"}</Button></div></article>; })}</div></section>}
         </div>
 
-        <aside className="h-fit border border-border bg-card p-5 shadow-[var(--shadow-panel)]"><div className="flex items-center justify-between"><h2 className="font-semibold">Your cart</h2><ShoppingBag className="size-4 text-muted-foreground" /></div>{cart?.items?.length ? <><div className="mt-5 space-y-3">{cart.items.map((item: any) => <div key={item.id} className="flex justify-between gap-3 text-sm"><span>{item.name} <span className="text-muted-foreground">× {item.quantity}</span></span><span className="font-medium">{money(item.line_total)}</span></div>)}</div><div className="mt-5 border-t border-border pt-4"><div className="flex justify-between font-semibold"><span>Total</span><span>{money(cart.total)}</span></div>{cart.budget != null && <p className={`mt-2 text-xs ${cart.over_budget ? "text-destructive" : "text-success"}`}>{cart.over_budget ? "Over your budget" : `${money(cart.budget_remaining)} remaining in budget`}</p>}<Button className="mt-5 w-full" onClick={confirmOrder} disabled={loading || cart.over_budget || order?.status === "COMPLETED"}>{loading ? "Opening secure checkout..." : "Confirm and continue"}<ArrowRight className="size-4" /></Button>{order?.status === "COMPLETED" ? <div className="mt-4 border border-success/40 bg-success/10 p-3 text-sm"><Check className="mb-1 size-4 text-success" />Payment verified. Order {order.order_number} is confirmed.</div> : order?.status === "PAYMENT_FAILED" ? <div className="mt-4 border border-destructive/40 bg-destructive/10 p-3 text-sm">Payment was not completed. Your cart is still safe; try again when ready.</div> : null}</div></> : <p className="mt-8 text-sm text-muted-foreground">Add a recommendation to begin.</p>}</aside>
+        <aside className="h-fit border border-border bg-card p-5 shadow-[var(--shadow-panel)]"><div className="flex items-center justify-between"><h2 className="font-semibold">Your cart</h2><ShoppingBag className="size-4 text-muted-foreground" /></div>{cart?.items?.length ? <><div className="mt-5 space-y-3">{cart.items.map((item: any) => <div key={item.id} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0"><span className="block truncate">{item.name}</span><span className="text-muted-foreground">× {item.quantity}</span></span><span className="flex shrink-0 items-center gap-2"><span className="font-medium">{money(item.line_total)}</span><Button type="button" variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" title={`Remove ${item.name}`} aria-label={`Remove ${item.name}`} onClick={() => removeItem(item.id)}>×</Button></span></div>)}</div><div className="mt-5 border-t border-border pt-4"><div className="flex justify-between font-semibold"><span>Total</span><span>{money(cart.total)}</span></div>{cart.budget != null && <p className={`mt-2 text-xs ${cart.over_budget ? "text-destructive" : "text-success"}`}>{cart.over_budget ? "Over your budget" : `${money(cart.budget_remaining)} remaining in budget`}</p>}<Button className="mt-5 w-full" onClick={confirmOrder} disabled={loading || cart.over_budget || order?.status === "COMPLETED"}>{loading ? "Opening secure checkout..." : "Confirm and continue"}<ArrowRight className="size-4" /></Button>{order?.status === "COMPLETED" ? <div className="mt-4 border border-success/40 bg-success/10 p-3 text-sm"><Check className="mb-1 size-4 text-success" />Payment verified. Order {order.order_number} is confirmed.</div> : order?.status === "PAYMENT_FAILED" ? <div className="mt-4 border border-destructive/40 bg-destructive/10 p-3 text-sm">Payment was not completed. Your cart is still safe; try again when ready.</div> : null}</div></> : <p className="mt-8 text-sm text-muted-foreground">Add a recommendation to begin.</p>}</aside>
+      </section>
+      <section className="mx-auto max-w-6xl px-5 pb-14 lg:px-16">
+        <div className="border border-border bg-card p-5">
+          <div className="flex items-center justify-between"><h2 className="font-semibold">My orders</h2><span className="text-xs text-muted-foreground">Demo session history</span></div>
+          {history.length === 0 ? <p className="mt-4 text-sm text-muted-foreground">Verified orders will remain here after checkout.</p> : <div className="mt-4 divide-y divide-border">{history.map((item: any) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"><span className="font-medium">{item.order_number}</span><span>{item.items?.map((line: any) => `${line.name} × ${line.quantity}`).join(", ")}</span><span>{money(item.total)}</span><span className="text-xs text-muted-foreground">{item.payment_status}</span></div>)}</div>}
+        </div>
       </section>
     </main>
   );

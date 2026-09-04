@@ -81,6 +81,7 @@ def create_order(
     *,
     confirmed: bool,
     customer: Optional[dict] = None,
+    customer_id: Optional[int] = None,
 ) -> Order:
     """Turn an active cart into a Razorpay-backed order after policy + inventory checks."""
     try:
@@ -137,7 +138,7 @@ def create_order(
         existing.status = OrderStatus.CANCELLED  # cart changed -> supersede stale order
 
     # 4) Optional customer record.
-    customer_id = _upsert_customer(db, customer)
+    customer_id = cart.customer_id or customer_id or _upsert_customer(db, customer)
 
     # 5) Create the REAL Razorpay order (amount is backend-computed).
     order_number = _order_number()
@@ -220,6 +221,14 @@ def _upsert_customer(db: Session, customer: Optional[dict]) -> Optional[int]:
     name = (customer.get("name") or "Guest").strip() or "Guest"
     email = (customer.get("email") or None)
     contact = (customer.get("contact") or None)
+    existing = None
+    if email:
+        existing = db.execute(select(Customer).where(Customer.email == email)).scalar_one_or_none()
+    if existing is None and contact:
+        existing = db.execute(select(Customer).where(Customer.contact == contact)).scalar_one_or_none()
+    if existing is not None:
+        existing.name = name
+        return existing.id
     row = Customer(name=name, email=email, contact=contact)
     db.add(row)
     db.flush()
@@ -417,4 +426,5 @@ def serialize_order(order: Order) -> dict:
             for it in order.items
         ],
         "created_at": order.created_at.isoformat() if order.created_at else None,
+        "customer": order.customer.to_dict() if getattr(order, "customer", None) else None,
     }
