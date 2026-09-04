@@ -197,7 +197,7 @@ function Dashboard() {
           <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
             <div>
               <p className="mb-2 text-xs font-medium text-primary">Thursday, 3 September 2026</p>
-              <h1 className="text-2xl font-semibold tracking-tight lg:text-[28px]">{view === "overview" ? "Revenue intelligence" : viewTitle}</h1>
+              <h1 className={`text-2xl font-semibold tracking-tight lg:text-[28px] ${view === "overview" ? "gradient-text-primary" : ""}`}>{view === "overview" ? "Revenue intelligence" : viewTitle}</h1>
               <p className="mt-1 text-sm text-muted-foreground">
                 {view === "overview" && "Autonomous commerce performance for Zephyr Apparel."}
                 {view === "agent" && "Set the boundaries your agent must operate within."}
@@ -435,7 +435,10 @@ function AuditPreview() {
 }
 
 function AuditRow({ time, label, reason, tone }: typeof auditEntries[number]) {
-  const toneClass = tone === "success" ? "bg-success" : tone === "warning" ? "bg-warning" : "bg-destructive";
+  const toneClass =
+    tone === "success" ? "bg-success-gradient shadow-glow-success" :
+    tone === "warning" ? "bg-warning" :
+      "bg-destructive";
   return <div className="flex gap-3 px-4 py-3.5"><span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${toneClass}`} /><div className="min-w-0"><div className="flex items-center justify-between gap-2"><p className="text-xs font-medium">{label}</p><span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{time}</span></div><p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{reason}</p></div></div>;
 }
 
