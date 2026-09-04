@@ -1,270 +1,235 @@
-"""LangGraph-style agent implementation.
+"""Agent orchestration for the shopping *discovery* flow.
 
-Provides node functions:
-- analyze_cart
-- upsell_decision
-- create_order
-- capture_payment
-- log_action
+This is a real LangGraph ``StateGraph`` (parse_intent -> search_catalog ->
+recommend). The identical node functions also run as a plain sequential pipeline
+if LangGraph is unavailable, so behaviour is deterministic either way.
 
-Also exposes `run_full_flow` to run the end-to-end checkout simulation.
+Deliberate boundary: the graph covers only reasoning/discovery. The
+money-moving steps from the product spec — create_order, verify_payment,
+complete_order — are **deterministic backend services** (see ``orders.py``)
+invoked by explicit, user-confirmed API calls. The LLM never sits on the money
+path. (LLM = reasoning, backend = truth, policy = safety, Razorpay = payment.)
 """
-import json
-import os
-import re
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
 
-from dotenv import load_dotenv
-from openai import OpenAI
+from typing import Any, Dict, List, Optional, TypedDict
 
-from . import razorpay_tools as rz, audit
+from sqlalchemy.orm import Session
 
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-
-_nvidia_api_key = os.getenv("NVIDIA_API_KEY", "")
-_nvidia_client = OpenAI(
-    base_url="https://integrate.api.nvidia.com/v1",
-    api_key=_nvidia_api_key if _nvidia_api_key else "dummy-key-not-set",
-) if _nvidia_api_key else None
+from . import catalog, llm, policy
+from .audit import EventType, record_event
+from .models import EventSource, MerchantConfig, Product
 
 
-def _clean_copy_text(value: Any, fallback: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return fallback
-
-    # Strip model / provider fallback noise before rendering it in the UI.
-    text = re.sub(r"\(fallback:.*$", "", text, flags=re.IGNORECASE).strip()
-    text = re.sub(r"error code:\s*\d+.*$", "", text, flags=re.IGNORECASE).strip()
-    text = re.sub(r"\{.*$", "", text).strip().strip("\"'")
-    text = re.sub(r"\s+", " ", text).strip(" ,.;:-")
-    return text or fallback
+class ShopState(TypedDict, total=False):
+    query: str
+    db: Session
+    config: MerchantConfig
+    intent: Dict[str, Any]
+    candidates: List[Dict[str, Any]]
+    recommendation: Optional[Dict[str, Any]]
+    upsell: Optional[Dict[str, Any]]
+    steps: List[Dict[str, str]]
 
 
-def _normalize_suggestion(llm_result: Dict[str, Any]) -> Dict[str, Any]:
-    fallback_item = "Handcrafted dupatta"
-    fallback_reason = "Adds a complementary festive finish to the current outfit."
+CANDIDATE_LIMIT = 8
 
-    try:
-        price = float(llm_result.get("price", 399) or 399)
-    except Exception:
-        price = 399.0
 
-    price = min(max(price, 199.0), 1499.0)
+# --------------------------------------------------------------------------- #
+# Graph nodes (pure-ish functions returning partial state updates)
+# --------------------------------------------------------------------------- #
+def node_parse_intent(state: ShopState) -> Dict[str, Any]:
+    query = state["query"]
+    intent = llm.parse_intent(query)
+    record_event(
+        state["db"],
+        event_type=EventType.INTENT_PARSED,
+        description=f"Understood request: occasion={intent.get('occasion') or '—'}, budget=₹{intent.get('budget') or '—'}",
+        source=EventSource.AI,
+        cart_id=None,
+        metadata={"query": query, "intent": intent},
+    )
+    steps = state.get("steps", []) + [{"key": "intent", "label": "Understanding your request", "status": "done"}]
+    return {"intent": intent, "steps": steps}
 
+
+def node_search_catalog(state: ShopState) -> Dict[str, Any]:
+    db, intent = state["db"], state["intent"]
+    products = catalog.search_products(
+        db,
+        query=state["query"],
+        category=intent.get("category"),
+        occasion=intent.get("occasion"),
+        max_price=intent.get("budget"),
+        gender=intent.get("gender"),
+        in_stock_only=True,
+        limit=CANDIDATE_LIMIT,
+    )
+    candidates = [p.to_dict() for p in products]
+    record_event(
+        db,
+        event_type=EventType.PRODUCT_SEARCH,
+        description=f"Searched catalog — {len(candidates)} in-stock matches.",
+        source=EventSource.AI,
+        metadata={"count": len(candidates), "filters": {k: intent.get(k) for k in ("category", "occasion", "budget", "gender")}},
+    )
+    steps = state.get("steps", []) + [
+        {"key": "catalog", "label": "Checking merchant catalog", "status": "done"},
+        {"key": "inventory", "label": "Checking availability", "status": "done"},
+    ]
+    return {"candidates": candidates, "steps": steps}
+
+
+def _upsell_pool(db: Session, candidates: List[Dict[str, Any]], config: MerchantConfig, budget: Optional[int]) -> List[Dict[str, Any]]:
+    """Related products of the top candidates, offered to the LLM as upsell options.
+
+    An item may legitimately be both a search result and a good add-on (e.g.
+    matching earrings for a saree), so we do NOT exclude search candidates here —
+    we only avoid suggesting a product as its own upsell and dedupe by id.
+    """
+    pool: Dict[int, Dict[str, Any]] = {}
+    for c in candidates[:3]:
+        headroom = None if budget is None else max(0, budget - c["price"])
+        cap = config.max_upsell_value if headroom is None else min(config.max_upsell_value, headroom)
+        for rel in catalog.get_related_products(db, c["id"], limit=4, max_price=cap):
+            if rel.id == c["id"] or rel.id in pool:
+                continue
+            pool[rel.id] = rel.to_dict()
+    return list(pool.values())
+
+
+def node_recommend(state: ShopState) -> Dict[str, Any]:
+    db, config, intent = state["db"], state["config"], state["intent"]
+    candidates = state.get("candidates", [])
+    steps = state.get("steps", []) + [{"key": "match", "label": "Finding your best match", "status": "done"}]
+
+    if not candidates:
+        return {"recommendation": None, "upsell": None, "steps": steps}
+
+    budget = intent.get("budget")
+    upsell_candidates = _upsell_pool(db, candidates, config, budget)
+
+    rec = llm.generate_recommendation(state["query"], intent, candidates, upsell_candidates)
+
+    primary = catalog.get_product(db, rec["product_id"]) if rec.get("product_id") else None
+    if primary is None:
+        primary = catalog.get_product(db, candidates[0]["id"])
+
+    recommendation = {"product": primary.to_dict(), "reason": rec.get("reason", "")} if primary else None
+    record_event(
+        db,
+        event_type=EventType.PRODUCT_RECOMMENDED,
+        description=f"Recommended {primary.name}" if primary else "No recommendation",
+        source=EventSource.AI,
+        metadata={"product_id": primary.id if primary else None, "reason": rec.get("reason"), "llm": rec.get("source")},
+    )
+
+    # Resolve upsell deterministically under policy, using the LLM choice as a hint.
+    upsell = _resolve_upsell(db, config, primary, budget, rec, upsell_candidates)
+    if upsell:
+        record_event(
+            db,
+            event_type=EventType.UPSELL_PROPOSED,
+            description=f"Proposed add-on: {upsell['product']['name']} (₹{upsell['product']['price']})",
+            source=EventSource.AI,
+            metadata={"product_id": upsell["product"]["id"], "reason": upsell["reason"]},
+        )
+
+    return {"recommendation": recommendation, "upsell": upsell, "steps": steps}
+
+
+def _resolve_upsell(
+    db: Session,
+    config: MerchantConfig,
+    primary: Optional[Product],
+    budget: Optional[int],
+    rec: Dict[str, Any],
+    upsell_candidates: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if primary is None:
+        return None
+    remaining = None if budget is None else max(0, budget - primary.price)
+
+    def _valid(product: Product) -> bool:
+        return policy.check_upsell(config, upsell_price=product.price, remaining_budget=remaining).allowed
+
+    # 1) Honour a policy-valid LLM upsell choice.
+    if rec.get("upsell_product_id"):
+        product = catalog.get_product(db, rec["upsell_product_id"])
+        if product and product.id != primary.id and product.stock > 0 and _valid(product):
+            return {"product": product.to_dict(), "reason": rec.get("upsell_reason") or "Pairs beautifully with your selection."}
+
+    # 2) Deterministic fallback: best curated related item within policy/budget.
+    for product in catalog.get_related_products(db, primary.id, limit=6, max_price=config.max_upsell_value):
+        if product.id != primary.id and _valid(product):
+            return {"product": product.to_dict(), "reason": "Frequently paired with this piece and keeps you within budget."}
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Graph assembly (LangGraph if available, deterministic sequential otherwise)
+# --------------------------------------------------------------------------- #
+_compiled_graph = None
+_graph_backend = "sequential"
+
+
+def _build_langgraph():
+    global _graph_backend
+    from langgraph.graph import END, START, StateGraph
+
+    builder = StateGraph(ShopState)
+    builder.add_node("parse_intent", node_parse_intent)
+    builder.add_node("search_catalog", node_search_catalog)
+    builder.add_node("recommend", node_recommend)
+    builder.add_edge(START, "parse_intent")
+    builder.add_edge("parse_intent", "search_catalog")
+    builder.add_edge("search_catalog", "recommend")
+    builder.add_edge("recommend", END)
+    graph = builder.compile()
+    _graph_backend = "langgraph"
+    return graph
+
+
+def _get_graph():
+    global _compiled_graph
+    if _compiled_graph is None:
+        try:
+            _compiled_graph = _build_langgraph()
+        except Exception:
+            _compiled_graph = None  # sequential fallback used
+    return _compiled_graph
+
+
+def graph_backend() -> str:
+    _get_graph()
+    return _graph_backend
+
+
+def run_discovery(db: Session, query: str, config: MerchantConfig) -> Dict[str, Any]:
+    """Execute the discovery pipeline and return the assembled result for the API."""
+    initial: ShopState = {"query": query, "db": db, "config": config, "steps": []}
+
+    graph = _get_graph()
+    if graph is not None:
+        try:
+            final = graph.invoke(initial)
+        except Exception:
+            final = _run_sequential(initial)
+    else:
+        final = _run_sequential(initial)
+
+    intent = final.get("intent", {})
     return {
-        "item": _clean_copy_text(llm_result.get("item"), fallback_item),
-        "price": price,
-        "reason": _clean_copy_text(llm_result.get("reason"), fallback_reason),
+        "intent": {k: intent.get(k) for k in ("intent", "occasion", "recipient", "category", "budget", "gender", "preferences", "constraints")},
+        "products": final.get("candidates", []),
+        "recommendation": final.get("recommendation"),
+        "upsell": final.get("upsell"),
+        "steps": final.get("steps", []),
+        "backend": _graph_backend,
     }
 
 
-def _llm_analyze(cart_items, total) -> dict:
-    """Call NVIDIA LLM to analyze cart and generate upsell suggestion with reason."""
-    if not _nvidia_client:
-        return {"item": "handcrafted dupatta", "price": 399, "reason": "A complementary ethnic accessory pairs well with this outfit."}
-
-    cart_str = ", ".join([f"{i.get('name')} x{i.get('qty', 1)} @ ₹{i.get('price')}" for i in cart_items])
-    prompt = f"""You are an AI commerce agent for Zephyr Apparel, an ethnic wear brand.
-
-Cart: {cart_str}
-Cart Total: ₹{total}
-
-Your job:
-1. Suggest ONE specific product to upsell (must be relevant to the cart)
-2. Give a short reason (1 sentence, data-driven, mention cart context)
-3. Suggest a price between ₹199-₹1499
-
-Respond ONLY in this JSON format (no markdown, no extra text):
-{{"item": "product name", "price": 599, "reason": "one sentence why this fits the cart"}}"""
-
-    try:
-        resp = _nvidia_client.chat.completions.create(
-            model="meta/llama-3.1-70b-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=150,
-            temperature=0.4,
-        )
-        text = resp.choices[0].message.content.strip()
-        return json.loads(text)
-    except Exception:
-        return {
-            "item": "handcrafted dupatta",
-            "price": 399,
-            "reason": "A complementary ethnic accessory pairs well with this outfit.",
-        }
-
-
-@dataclass
-class AgentState:
-    cart: List[Dict[str, Any]] = field(default_factory=list)
-    customer_id: Optional[str] = None
-    order_id: Optional[str] = None
-    audit_trail: List[Dict[str, Any]] = field(default_factory=list)
-    upsell_offered: bool = False
-    payment_status: Optional[str] = None
-
-
-class CommerceAgent:
-    UPSALE_THRESHOLD = 500.0
-
-    def __init__(self):
-        self.state = AgentState()
-
-    def _now(self) -> str:
-        return datetime.utcnow().isoformat() + "Z"
-
-    def log_action(self, action: str, inputs: Dict[str, Any], outputs: Dict[str, Any], reason: str) -> Dict[str, Any]:
-        entry = {
-            "timestamp": self._now(),
-            "action": action,
-            "inputs": inputs,
-            "outputs": outputs,
-            "reason": reason,
-        }
-        # append-only audit
-        audit.append_log(entry)
-        self.state.audit_trail.append(entry)
-        return entry
-
-    def analyze_cart(self, cart_items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        self.state.cart = cart_items
-        total = sum(float(i.get("price", 0)) * int(i.get("qty", 1)) for i in cart_items)
-
-        suggestion = _normalize_suggestion(_llm_analyze(cart_items, total))
-        reason = suggestion["reason"]
-
-        outputs = {"total": total, "suggestion": suggestion}
-        return self.log_action("analyze_cart", {"cart": cart_items}, outputs, reason=reason)
-
-    def upsell_decision(self) -> Dict[str, Any]:
-        total = sum(float(it.get("price", 0)) * int(it.get("qty", 1)) for it in self.state.cart)
-        decision = total > self.UPSALE_THRESHOLD
-        reason = f"order total {total} {'>' if decision else '<='} upsell threshold {self.UPSALE_THRESHOLD}"
-        outputs = {"decision": decision, "total": total}
-        if decision:
-            self.state.upsell_offered = True
-        return self.log_action("upsell_decision", {"cart_total": total}, outputs, reason=reason)
-
-    def create_order(self, currency: str = "INR", receipt: Optional[str] = None) -> Dict[str, Any]:
-        total = sum(float(it.get("price", 0)) * int(it.get("qty", 1)) for it in self.state.cart)
-        # enforce hard max
-        if total > rz.MAX_ORDER_RUPEES:
-            return self.log_action("create_order", {"amount": total}, {}, reason=f"amount exceeds max {rz.MAX_ORDER_RUPEES}")
-
-        resp = rz.create_order(total, currency, receipt)
-        # try extract order id
-        order_id = None
-        raw = resp.get("outputs", {}).get("raw") if isinstance(resp.get("outputs"), dict) else resp.get("outputs")
-        if isinstance(raw, dict):
-            order_id = raw.get("id") or raw.get("order_id")
-        if order_id:
-            self.state.order_id = order_id
-
-        return self.log_action("create_order", {"amount": total, "currency": currency, "receipt": receipt}, resp, reason="Created order via Razorpay")
-
-    def capture_payment(self, payment_id: str, amount: float) -> Dict[str, Any]:
-        resp = rz.capture_payment(payment_id, amount)
-        err = resp.get("error")
-        if err:
-            self.state.payment_status = "failed"
-            # log and stop
-            return self.log_action("capture_payment", {"payment_id": payment_id, "amount": amount}, resp, reason=f"capture failed: {err}")
-
-        self.state.payment_status = "captured"
-        return self.log_action("capture_payment", {"payment_id": payment_id, "amount": amount}, resp, reason="Payment captured successfully")
-
-    def log_action_node(self, action: str, inputs: Dict[str, Any], outputs: Dict[str, Any], reason: str) -> Dict[str, Any]:
-        return self.log_action(action, inputs, outputs, reason)
-
-    def run_full_flow(self, cart: List[Dict[str, Any]], customer_info: Dict[str, Any]) -> Dict[str, Any]:
-        # analyze
-        self.analyze_cart(cart)
-        upsell_entry = self.upsell_decision()
-
-        # ensure customer exists
-        cust_resp = rz.create_customer(customer_info.get("name", "Guest"), customer_info.get("email"), customer_info.get("contact"))
-        cust_id = None
-        outputs = cust_resp.get("outputs") if isinstance(cust_resp, dict) else None
-        if isinstance(outputs, dict):
-            raw = outputs.get("raw")
-            if isinstance(raw, dict):
-                cust_id = raw.get("id") or raw.get("customer_id")
-        if not cust_id:
-            # fallback to response field
-            cust_id = cust_resp.get("outputs", {}).get("customer_id") if isinstance(cust_resp.get("outputs"), dict) else cust_resp.get("customer_id")
-        self.state.customer_id = cust_id
-        self.log_action("create_customer", {"customer_info": customer_info}, cust_resp, reason="Ensured customer record")
-
-        # handle upsell acceptance (frontend may indicate acceptance)
-        accept_upsell = bool(customer_info.get("accept_upsell", False))
-        if self.state.upsell_offered and accept_upsell:
-            # append upsell item from last analyze_cart suggestion
-            last_suggestion = None
-            # find last analyze_cart in audit_trail
-            for e in reversed(self.state.audit_trail):
-                if e.get("action") == "analyze_cart":
-                    last_suggestion = e.get("outputs", {}).get("suggestion")
-                    break
-            if last_suggestion:
-                self.state.cart.append({"name": last_suggestion.get("item"), "price": last_suggestion.get("price", 0), "qty": 1})
-                self.log_action("upsell_accepted", {"suggestion": last_suggestion}, {"accepted": True}, reason="Customer accepted upsell")
-
-        # create order
-        order_entry = self.create_order(receipt=f"rcpt_{int(datetime.utcnow().timestamp())}")
-
-        # simulate payment capture: in tests, caller should pass payment_id; here we simulate a payment id
-        simulated_payment_id = customer_info.get("simulate_payment_id") or f"pay_{int(datetime.utcnow().timestamp())}"
-        # determine amount for capture: try to read from order raw response
-        raw_amount = 0
-        try:
-            raw = order_entry.get("outputs", {}).get("raw")
-            if isinstance(raw, dict):
-                raw_amount = raw.get("amount", 0) / 100.0 if raw.get("amount") else 0
-        except Exception:
-            raw_amount = 0
-
-        # fallback to sum from cart
-        if not raw_amount:
-            raw_amount = sum(float(it.get("price", 0)) * int(it.get("qty", 1)) for it in self.state.cart)
-
-        capture_entry = self.capture_payment(simulated_payment_id, raw_amount)
-
-        return {
-            "order": order_entry,
-            "capture": capture_entry,
-            "customer": cust_resp,
-            "upsell_decision": upsell_entry,
-        }
-
-
-# expose a default agent instance
-agent = CommerceAgent()
-
-
-def build_langgraph_agent():
-    try:
-        import langgraph as lg
-
-        # This is a light integration: create nodes wrapping the methods
-        graph = {}
-        graph["analyze_cart"] = agent.analyze_cart
-        graph["upsell_decision"] = agent.upsell_decision
-        graph["create_order"] = agent.create_order
-        graph["capture_payment"] = agent.capture_payment
-        graph["log_action"] = agent.log_action_node
-        return graph
-    except Exception:
-        # LangGraph not available or integration deferred; return simple dict of callables
-        return {
-            "analyze_cart": agent.analyze_cart,
-            "upsell_decision": agent.upsell_decision,
-            "create_order": agent.create_order,
-            "capture_payment": agent.capture_payment,
-            "log_action": agent.log_action_node,
-        }
-
-
-__all__ = ["agent", "build_langgraph_agent", "CommerceAgent", "AgentState"]
+def _run_sequential(state: ShopState) -> ShopState:
+    for node in (node_parse_intent, node_search_catalog, node_recommend):
+        state = {**state, **node(state)}
+    return state

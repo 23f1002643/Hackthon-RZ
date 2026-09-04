@@ -1,7 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  ArrowRight,
   ArrowDownRight,
   ArrowUpRight,
   BarChart3,
@@ -39,7 +40,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Toaster } from "@/components/ui/sonner";
-import { fetchAuditLogs, fetchChartData, fetchMetrics, fetchNotifications, postCheckout, toggleAgent } from "@/lib/api";
+import { fetchAuditLogs, fetchChartData, fetchMetrics, fetchNotifications, searchShop, toggleAgent } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/")({
@@ -53,36 +54,39 @@ export const Route = createFileRoute("/")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  component: Dashboard,
+  component: Landing,
 });
 
 type ViewId = "overview" | "agent" | "checkout" | "audit";
 type DashboardLog = Record<string, any>;
+
+function Landing() {
+  return (
+    <main className="min-h-screen overflow-hidden bg-background text-foreground">
+      <section className="relative border-b border-border px-5 py-16 lg:px-16 lg:py-24">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_85%_10%,oklch(0.34_0.14_300/.42),transparent_35%),radial-gradient(circle_at_15%_0%,oklch(0.3_0.12_265/.32),transparent_32%)]" />
+        <div className="relative mx-auto max-w-6xl">
+          <div className="flex items-center gap-2 text-sm font-medium text-primary"><Sparkles className="size-4" /> Vastra Studio</div>
+          <h1 className="mt-6 max-w-4xl text-5xl font-semibold tracking-tight lg:text-7xl">From intent to payment.</h1>
+          <p className="mt-6 max-w-2xl text-lg leading-relaxed text-muted-foreground">An AI commerce agent that understands what shoppers want, finds real products, and keeps every money action bounded by policy and explicit consent.</p>
+          <div className="mt-9 flex flex-wrap gap-3">
+            <Button asChild className="bg-brand-gradient text-primary-foreground"><Link to="/shop">Start shopping <ArrowRight className="size-4" /></Link></Button>
+            <Button asChild variant="outline"><Link to="/dashboard">Open merchant dashboard</Link></Button>
+          </div>
+          <div className="mt-16 grid max-w-4xl gap-px border border-border bg-border sm:grid-cols-3">
+            {["Real catalog data", "Server-side payment verification", "Explainable audit trail"].map((item) => <div key={item} className="bg-card p-5 text-sm font-medium">{item}</div>)}
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
 
 const navItems: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "agent", label: "Agent control", icon: Bot },
   { id: "checkout", label: "Checkout simulation", icon: ShoppingBag },
   { id: "audit", label: "Audit trail", icon: FileClock },
-];
-
-const chartSeed = [
-  { hour: "00:00", today: 4, yesterday: 6 },
-  { hour: "03:00", today: 9, yesterday: 8 },
-  { hour: "06:00", today: 14, yesterday: 12 },
-  { hour: "09:00", today: 31, yesterday: 22 },
-  { hour: "12:00", today: 47, yesterday: 39 },
-  { hour: "15:00", today: 58, yesterday: 51 },
-  { hour: "18:00", today: 74, yesterday: 65 },
-  { hour: "21:00", today: 86, yesterday: 79 },
-];
-
-const recentActionSeed = [
-  { time: "09:42:18", action: "Upsell", detail: "Recommended dupatta pairing", outcome: "success", value: "+₹1,299" },
-  { time: "09:41:52", action: "Checkout", detail: "Address intent confirmed", outcome: "success", value: "Captured" },
-  { time: "09:40:27", action: "Recovery", detail: "Payment retry initiated", outcome: "pending", value: "Retry 1/3" },
-  { time: "09:38:04", action: "Upsell", detail: "Suggested festive bundle", outcome: "success", value: "+₹2,498" },
-  { time: "09:35:46", action: "Guardrail", detail: "High-value order held for review", outcome: "failed", value: "₹28,400" },
 ];
 
 const auditSeed: DashboardLog[] = [
@@ -266,7 +270,7 @@ function mergeIds(current: string[], extra: string[]) {
   return Array.from(new Set([...current, ...extra]));
 }
 
-function Dashboard() {
+export function Dashboard() {
   const [view, setView] = useState<ViewId>("overview");
   const [agentLive, setAgentLive] = useState(true);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -340,17 +344,8 @@ function Dashboard() {
 
   async function runSimulation() {
     try {
-      const sampleCart = [
-        { name: "Hand-block printed kurta", price: 2499, qty: 1 },
-        { name: "Chanderi silk dupatta", price: 1299, qty: 1 },
-      ];
-      const customer = { name: "Sim Buyer", email: "sim@zephyr.com", contact: "9999999999" };
-      const res = await postCheckout(sampleCart, customer);
-      if (res?.ok) {
-        toast.success("Checkout simulation completed");
-      } else {
-        toast.error("Checkout simulation failed");
-      }
+      await searchShop("I need something festive under 4000");
+      toast.success("Live catalog discovery completed");
     } catch (error) {
       console.error("simulation failed", error);
       toast.error(`Simulation error: ${error instanceof Error ? error.message : String(error)}`);
@@ -521,7 +516,7 @@ function Dashboard() {
               onClearAudit={clearVisibleAuditLogs}
             />
           )}
-          {view === "agent" && <AgentControl live={agentLive} onToggle={() => setConfirmOpen(true)} />}
+          {view === "agent" && <AgentControl live={agentLive} onToggle={() => setConfirmOpen(true)} logs={auditLogs} />}
           {view === "checkout" && <CheckoutSimulation />}
           {view === "audit" && (
             <AuditTrail
@@ -586,7 +581,7 @@ function Dashboard() {
             <div className="flex items-center gap-2 font-medium">
               <Gauge className="size-4 text-primary" /> Current guardrails are active
             </div>
-            <p className="mt-1 pl-6 text-xs text-muted-foreground">Max order ₹25,000 · 3 retries · 12% upsell threshold</p>
+            <p className="mt-1 pl-6 text-xs text-muted-foreground">Max order ₹10,000 · Max upsell ₹1,500 · Confirmation required</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>
@@ -595,12 +590,12 @@ function Dashboard() {
             <Button
               className={agentLive ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : "bg-brand-gradient text-primary-foreground hover:opacity-90"}
               onClick={async () => {
-                const nextAction = agentLive ? "pause" : "resume";
+                const nextActive = !agentLive;
                 try {
-                  const result = await toggleAgent(nextAction);
-                  setAgentLive(result?.agent_paused === false);
+                  const result = await toggleAgent(nextActive);
+                  setAgentLive(result?.merchant?.agent_active ?? nextActive);
                   setConfirmOpen(false);
-                  toast.success(nextAction === "pause" ? "Commerce agent paused" : "Commerce agent resumed");
+                  toast.success(nextActive ? "Commerce agent resumed" : "Commerce agent paused");
                 } catch (error) {
                   console.error("toggle failed", error);
                   toast.error(`Agent sync failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -734,7 +729,7 @@ function Overview({
   onSelectEntry: (entry: DashboardLog) => void;
   onClearAudit: () => void;
 }) {
-  const [metrics, setMetrics] = useState<any>({ revenue: 0, order_count: 0, upsell_acceptance_rate: 0, agent_actions: 0 });
+  const [metrics, setMetrics] = useState<any>({ revenue_today: 0, orders_today: 0, upsell_conversion: 0, agent_actions: 0 });
 
   useEffect(() => {
     let mounted = true;
@@ -742,7 +737,7 @@ function Overview({
     async function loadMetrics() {
       try {
         const result = await fetchMetrics();
-        if (mounted) setMetrics(result);
+        if (mounted) setMetrics(result.metrics || {});
       } catch (error) {
         console.error(error);
       }
@@ -759,14 +754,14 @@ function Overview({
   return (
     <>
       <section className="grid border border-border bg-card shadow-[var(--shadow-panel)] sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="Revenue today" value={formatCurrency(Number(metrics.revenue || 0))} change="+18.4%" detail="vs yesterday" icon={CircleDollarSign} positive />
-        <Kpi label="Orders" value={`${metrics.order_count ?? 0}`} change="+12.8%" detail="vs yesterday" icon={Package} positive />
-        <Kpi label="Upsell accepted" value={`${Math.round(Number(metrics.upsell_acceptance_rate || 0))}%`} change="17.8%" detail="of eligible orders" icon={Target} positive />
-        <Kpi label="Agent actions" value={String(metrics.agent_actions ?? 0)} change="99.2%" detail="within policy" icon={Activity} positive />
+        <Kpi label="Revenue today" value={formatCurrency(Number(metrics.revenue_today || 0))} change="Live" detail="verified orders" icon={CircleDollarSign} positive />
+        <Kpi label="Orders" value={`${metrics.orders_today ?? 0}`} change="Live" detail="paid today" icon={Package} positive />
+        <Kpi label="Upsell conversion" value={`${Math.round(Number(metrics.upsell_conversion || 0))}%`} change="Live" detail="accepted proposals" icon={Target} positive />
+        <Kpi label="Agent actions" value={String(metrics.agent_actions ?? 0)} change="Live" detail="recorded events" icon={Activity} positive />
       </section>
       <section className="grid gap-5 xl:grid-cols-[minmax(260px,0.88fr)_minmax(440px,1.5fr)_minmax(300px,1fr)]">
         <ActivityFeed logs={auditLogs} onOpenAudit={onOpenAudit} onSelectEntry={onSelectEntry} onClear={onClearAudit} />
-        <RevenueChart totalRevenue={Number(metrics.revenue || 0)} orderCount={Number(metrics.order_count || 0)} agentActions={Number(metrics.agent_actions || 0)} />
+        <RevenueChart totalRevenue={Number(metrics.revenue_today || 0)} orderCount={Number(metrics.orders_today || 0)} agentActions={Number(metrics.agent_actions || 0)} />
         <AuditPreview logs={auditLogs} onOpenAudit={onOpenAudit} onSelectEntry={onSelectEntry} />
       </section>
     </>
@@ -912,7 +907,7 @@ function RevenueChart({
   orderCount?: number;
   agentActions?: number;
 }) {
-  const [liveChartData, setLiveChartData] = useState(chartSeed);
+  const [liveChartData, setLiveChartData] = useState<any[]>([]);
 
   useEffect(() => {
     let mounted = true;
@@ -922,7 +917,7 @@ function RevenueChart({
         const data = await fetchChartData();
         if (mounted && data.chart?.length) setLiveChartData(data.chart);
       } catch {
-        // Keep seeded chart data when the backend is unavailable.
+        // An unavailable metrics endpoint must not become invented revenue.
       }
     }
 
@@ -1042,7 +1037,7 @@ function AuditRow({ entry, onClick }: { entry: DashboardLog; onClick?: () => voi
   );
 }
 
-function AgentControl({ live, onToggle }: { live: boolean; onToggle: () => void }) {
+function AgentControl({ live, onToggle, logs }: { live: boolean; onToggle: () => void; logs: DashboardLog[] }) {
   return (
     <div className="space-y-5">
       <div className="grid gap-5 lg:grid-cols-[1.25fr_0.75fr]">
@@ -1070,17 +1065,17 @@ function AgentControl({ live, onToggle }: { live: boolean; onToggle: () => void 
           <div className="space-y-4 p-5">
             <div className="flex items-end justify-between">
               <span className="text-sm text-muted-foreground">Actions within policy</span>
-              <span className="text-2xl font-semibold tabular-nums">99.2%</span>
+              <span className="text-2xl font-semibold tabular-nums">Configured</span>
             </div>
             <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-              <div className="h-full w-[99.2%] rounded-full bg-success" />
+              <div className="h-full w-full rounded-full bg-success" />
             </div>
-            <p className="text-xs text-muted-foreground">12 actions held for merchant review today</p>
+            <p className="text-xs text-muted-foreground">Guardrails are enforced by the backend policy engine.</p>
           </div>
         </div>
         <div className="grid gap-5 lg:grid-cols-2">
           <LimitsPanel />
-          <RecentActions />
+          <RecentActions logs={logs} />
         </div>
       </div>
     </div>
@@ -1088,17 +1083,17 @@ function AgentControl({ live, onToggle }: { live: boolean; onToggle: () => void 
 }
 
 function LimitsPanel() {
-  const [maxOrderValue, setMaxOrderValue] = useState(25000);
+  const [maxOrderValue, setMaxOrderValue] = useState(10000);
   const [maxRetries, setMaxRetries] = useState(3);
-  const [upsellThreshold, setUpsellThreshold] = useState(12);
+  const [upsellThreshold, setUpsellThreshold] = useState(1500);
 
   return (
     <div className="border border-border bg-card shadow-[var(--shadow-panel)]">
       <PanelHeader icon={Settings2} title="Operating limits" meta="Applied instantly" />
       <div className="space-y-5 p-5">
         <Limit label="Max order value" value={maxOrderValue} onChange={setMaxOrderValue} hint="Orders above this value require review" min={5000} max={50000} step={500} />
-        <Limit label="Max payment retries" value={maxRetries} onChange={setMaxRetries} hint="Stops after the third gateway failure" min={1} max={5} step={1} />
-        <Limit label="Upsell threshold" value={upsellThreshold} onChange={setUpsellThreshold} hint="Minimum confidence before a recommendation" min={5} max={25} step={1} />
+        <Limit label="Max payment retries" value={maxRetries} onChange={setMaxRetries} hint="Displayed control; gateway retries remain server-side" min={1} max={5} step={1} />
+        <Limit label="Max upsell value" value={upsellThreshold} onChange={setUpsellThreshold} hint="Must remain within the merchant policy" min={0} max={1500} step={50} />
       </div>
     </div>
   );
@@ -1154,20 +1149,21 @@ function Limit({
   );
 }
 
-function RecentActions() {
+function RecentActions({ logs = [] }: { logs?: DashboardLog[] }) {
   return (
     <div className="border border-border bg-card shadow-[var(--shadow-panel)]">
       <PanelHeader icon={Activity} title="Last 5 actions" action="View audit" />
       <div className="divide-y divide-border">
-        {recentActionSeed.map((item) => (
-          <div key={item.time} className="flex items-center justify-between px-5 py-3">
+        {logs.slice(0, 5).map((item) => (
+          <div key={getEntryId(item)} className="flex items-center justify-between px-5 py-3">
             <div className="flex items-center gap-2.5">
               <span className="size-1.5 rounded-full bg-success" />
-              <span className="text-xs">{item.detail}</span>
+              <span className="text-xs">{getEntryLabel(item)}</span>
             </div>
-            <span className="text-[11px] tabular-nums text-muted-foreground">{item.time}</span>
+            <span className="text-[11px] tabular-nums text-muted-foreground">{getEntryTime(item)}</span>
           </div>
         ))}
+        {logs.length === 0 && <p className="px-5 py-4 text-xs text-muted-foreground">No recorded agent actions yet.</p>}
       </div>
     </div>
   );
@@ -1186,21 +1182,16 @@ function CheckoutSimulation() {
     let active = true;
 
     async function loadSuggestion() {
-      const cart = [
-        { name: "Hand-block printed kurta", price: 2499, qty: 1 },
-        { name: "Chanderi silk dupatta", price: 1299, qty: 1 },
-        { name: "Cotton straight pants", price: 1799, qty: 1 },
-      ];
-
       try {
-        const checkoutResult = await postCheckout(cart, {
-          name: "Sim Buyer",
-          email: "sim@zephyr.com",
-          contact: "9999999999",
-        });
-
-        if (!checkoutResult?.ok) {
-          throw new Error("checkout failed");
+        const discovery = await searchShop("I need a festive outfit under 4000");
+        const upsell = discovery.upsell?.product;
+        if (active && upsell) {
+          setAgentSuggestion({
+            item: upsell.name,
+            price: upsell.price,
+            reason: discovery.upsell.reason || "A related item from the merchant catalog.",
+          });
+          return;
         }
 
         const logs = await fetchAuditLogs();

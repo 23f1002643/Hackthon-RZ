@@ -1,0 +1,148 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { ArrowRight, Check, ShoppingBag, Sparkles } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { addCartItem, createCart, createOrder, markPaymentFailed, searchShop, verifyPayment } from "@/lib/api";
+import { toast } from "sonner";
+
+export const Route = createFileRoute("/shop")({ component: Shop });
+
+type Discovery = {
+  intent?: { budget?: number; occasion?: string };
+  recommendation?: { product: { id: number; name: string; price: number; description: string; image_url?: string }; reason: string };
+  upsell?: { product: { id: number; name: string; price: number }; reason: string };
+};
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: Record<string, unknown>) => { open: () => void };
+  }
+}
+
+function money(value = 0) {
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(value);
+}
+
+function Shop() {
+  const [query, setQuery] = useState("I need something for my sister's wedding under ₹4000");
+  const [discovery, setDiscovery] = useState<Discovery | null>(null);
+  const [cart, setCart] = useState<any>(null);
+  const [order, setOrder] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    document.body.appendChild(script);
+    return () => script.remove();
+  }, []);
+
+  async function discover() {
+    setLoading(true);
+    setOrder(null);
+    try {
+      const result = await searchShop(query);
+      setDiscovery(result);
+      if (result.recommendation?.product) {
+        const created = await createCart(result.intent?.budget, true);
+        const added = await addCartItem(created.cart.id, result.recommendation.product.id);
+        setCart(added.cart);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "We could not search the catalog.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function addUpsell() {
+    if (!cart || !discovery?.upsell?.product) return;
+    try {
+      const result = await addCartItem(cart.id, discovery.upsell.product.id, true);
+      setCart(result.cart);
+      toast.success("Added to your cart");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update the cart.");
+    }
+  }
+
+  async function confirmOrder() {
+    if (!cart) return;
+    setLoading(true);
+    try {
+      const result = await createOrder(cart.id, true);
+      if (!result.checkout?.key || !window.Razorpay) {
+        throw new Error("Secure checkout is not configured on the server.");
+      }
+      const checkout = new window.Razorpay({
+        key: result.checkout.key,
+        amount: result.checkout.amount,
+        currency: result.checkout.currency,
+        name: result.checkout.name,
+        description: result.checkout.description,
+        order_id: result.checkout.razorpay_order_id,
+        handler: async (response: { razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string }) => {
+          try {
+            const verified = await verifyPayment(result.order.id, response);
+            setOrder(verified.order);
+            toast.success("Payment verified and order confirmed");
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Payment verification failed.");
+          }
+        },
+        modal: {
+          ondismiss: async () => {
+            try {
+              await markPaymentFailed(result.order.id, "Buyer closed Razorpay Checkout.");
+              setOrder({ ...result.order, status: "PAYMENT_FAILED" });
+              toast("Payment was not completed. Your cart is safe.");
+            } catch {
+              toast.error("Payment was not completed. Retry from your cart.");
+            }
+          },
+        },
+      });
+      checkout.open();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not start secure payment.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const recommendation = discovery?.recommendation?.product;
+  return (
+    <main className="min-h-screen bg-background text-foreground">
+      <section className="border-b border-border bg-[radial-gradient(circle_at_top_right,oklch(0.35_0.12_300/.45),transparent_45%),radial-gradient(circle_at_top_left,oklch(0.3_0.12_265/.35),transparent_40%)] px-5 py-16 lg:px-16">
+        <div className="mx-auto max-w-6xl">
+          <div className="flex items-center gap-2 text-sm font-medium text-primary"><Sparkles className="size-4" /> Vastra Studio AI Commerce</div>
+          <h1 className="mt-5 max-w-3xl text-4xl font-semibold tracking-tight lg:text-6xl">Tell us what you are looking for.</h1>
+          <p className="mt-4 max-w-2xl text-base text-muted-foreground">A real merchant catalog, bounded recommendations, and a secure checkout when you are ready.</p>
+          <div className="mt-8 flex max-w-3xl flex-col gap-3 sm:flex-row">
+            <input value={query} onChange={(event) => setQuery(event.target.value)} className="min-h-12 flex-1 rounded-md border border-border bg-card px-4 text-sm outline-none focus:border-primary" onKeyDown={(event) => event.key === "Enter" && discover()} />
+            <Button onClick={discover} disabled={loading} className="min-h-12 bg-brand-gradient text-primary-foreground"><Sparkles className="size-4" /> {loading ? "Finding matches..." : "Find products"}</Button>
+          </div>
+        </div>
+      </section>
+
+      <section className="mx-auto grid max-w-6xl gap-6 px-5 py-10 lg:grid-cols-[1fr_360px] lg:px-16">
+        <div className="space-y-6">
+          {recommendation ? (
+            <article className="border border-border bg-card p-6 shadow-[var(--shadow-panel)]">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-primary">Recommended from the catalog</p>
+              <div className="mt-5 flex flex-col gap-5 sm:flex-row sm:items-center">
+                <div className="flex size-32 shrink-0 items-center justify-center rounded-md bg-muted text-primary"><ShoppingBag className="size-10" /></div>
+                <div><h2 className="text-2xl font-semibold">{recommendation.name}</h2><p className="mt-2 text-sm text-muted-foreground">{recommendation.description}</p><p className="mt-4 text-2xl font-semibold">{money(recommendation.price)}</p></div>
+              </div>
+              <div className="mt-6 border-l-2 border-primary pl-4 text-sm text-muted-foreground"><span className="font-medium text-foreground">Why this match? </span>{discovery?.recommendation?.reason}</div>
+            </article>
+          ) : <div className="border border-dashed border-border p-10 text-center text-sm text-muted-foreground">Your recommendation will appear here.</div>}
+          {discovery?.upsell && !cart?.items?.some((item: any) => item.product_id === discovery.upsell?.product.id) && <article className="flex items-center justify-between gap-4 border border-border bg-card p-5"><div><p className="text-xs font-medium uppercase tracking-[0.15em] text-primary">Complete the look</p><h3 className="mt-2 font-semibold">{discovery.upsell.product.name}</h3><p className="mt-1 text-sm text-muted-foreground">{discovery.upsell.reason}</p></div><Button variant="outline" onClick={addUpsell}>Add {money(discovery.upsell.product.price)}</Button></article>}
+        </div>
+
+        <aside className="h-fit border border-border bg-card p-5 shadow-[var(--shadow-panel)]"><div className="flex items-center justify-between"><h2 className="font-semibold">Your cart</h2><ShoppingBag className="size-4 text-muted-foreground" /></div>{cart?.items?.length ? <><div className="mt-5 space-y-3">{cart.items.map((item: any) => <div key={item.id} className="flex justify-between gap-3 text-sm"><span>{item.name} <span className="text-muted-foreground">× {item.quantity}</span></span><span className="font-medium">{money(item.line_total)}</span></div>)}</div><div className="mt-5 border-t border-border pt-4"><div className="flex justify-between font-semibold"><span>Total</span><span>{money(cart.total)}</span></div>{cart.budget != null && <p className={`mt-2 text-xs ${cart.over_budget ? "text-destructive" : "text-success"}`}>{cart.over_budget ? "Over your budget" : `${money(cart.budget_remaining)} remaining in budget`}</p>}<Button className="mt-5 w-full" onClick={confirmOrder} disabled={loading || cart.over_budget || order?.status === "COMPLETED"}>{loading ? "Opening secure checkout..." : "Confirm and continue"}<ArrowRight className="size-4" /></Button>{order?.status === "COMPLETED" ? <div className="mt-4 border border-success/40 bg-success/10 p-3 text-sm"><Check className="mb-1 size-4 text-success" />Payment verified. Order {order.order_number} is confirmed.</div> : order?.status === "PAYMENT_FAILED" ? <div className="mt-4 border border-destructive/40 bg-destructive/10 p-3 text-sm">Payment was not completed. Your cart is still safe; try again when ready.</div> : null}</div></> : <p className="mt-8 text-sm text-muted-foreground">Add a recommendation to begin.</p>}</aside>
+      </section>
+    </main>
+  );
+}

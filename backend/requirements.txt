@@ -4,6 +4,7 @@ python-dotenv
 razorpay
 langgraph
 pydantic
-pytest
-selenium
+sqlalchemy
 openai
+pytest
+httpx
