@@ -22,14 +22,18 @@ from . import razorpay_tools as rz, audit
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
+_nvidia_api_key = os.getenv("NVIDIA_API_KEY", "")
 _nvidia_client = OpenAI(
     base_url="https://integrate.api.nvidia.com/v1",
-    api_key=os.getenv("NVIDIA_API_KEY"),
-)
+    api_key=_nvidia_api_key if _nvidia_api_key else "dummy-key-not-set",
+) if _nvidia_api_key else None
 
 
 def _llm_analyze(cart_items, total) -> dict:
     """Call NVIDIA LLM to analyze cart and generate upsell suggestion with reason."""
+    if not _nvidia_client:
+        return {"item": "handcrafted dupatta", "price": 399, "reason": "NVIDIA_API_KEY not set — using fallback suggestion"}
+
     cart_str = ", ".join([f"{i.get('name')} x{i.get('qty', 1)} @ ₹{i.get('price')}" for i in cart_items])
     prompt = f"""You are an AI commerce agent for Zephyr Apparel, an ethnic wear brand.
 
