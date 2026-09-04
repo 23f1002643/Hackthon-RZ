@@ -1,0 +1,96 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+coverage.xml
+*.cover
+htmlcov/
+.env
+.venv/
+venv/
+ENV/
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Installer logs
+pip-log.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+coverage/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+npm-debug.log
+
+# Vite build
+dist/
+
+# Archives
+*.zip
+*.tar.gz
+*.tar
+*.gz
+
+# Selenium / webdriver
+webdriver.log
+chromedriver.log
+
+# Test artifacts
+backend/ui_test_report.json
+
+# Misc
+*.log
+.env.local
+
+# Ignore virtualenvs by name
+venv/
+ENV/
+.venv/
+env/
+
+# Ignore compiled C extensions
+*.so
+
+# IDE metadata
+*.sublime-workspace
+
+# lockfiles
+package-lock.json
+npm-shrinkwrap.json
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# coverage
+.coverage
+
+# macOS
+.DS_Store
