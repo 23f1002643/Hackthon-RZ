@@ -52,8 +52,8 @@ function Shop() {
     if (!Number.isInteger(id)) return;
     setCustomerId(id);
     fetchCustomerOrders(id).then((result) => setHistory(result.orders || [])).catch(() => setHistory([]));
-    const storedCartId = Number(window.localStorage.getItem("vastra-demo-cart-id"));
-    if (Number.isInteger(storedCartId)) getCart(storedCartId).then((result) => setCart(result.cart)).catch(() => window.localStorage.removeItem("vastra-demo-cart-id"));
+    const storedCartId = Number(window.localStorage.getItem("vastra-demo-cart-id-v2"));
+    if (Number.isInteger(storedCartId)) getCart(storedCartId).then((result) => setCart(result.cart)).catch(() => window.localStorage.removeItem("vastra-demo-cart-id-v2"));
   }, []);
 
   async function discover() {
@@ -81,7 +81,7 @@ function Shop() {
         window.localStorage.setItem("vastra-demo-customer-id", String(id));
         setCustomerId(id);
         const created = await createCart(discovery?.intent?.budget, true, id);
-        window.localStorage.setItem("vastra-demo-cart-id", String(created.cart.id));
+        window.localStorage.setItem("vastra-demo-cart-id-v2", String(created.cart.id));
         activeCart = created.cart;
       }
       const result = await addCartItem(activeCart.id, productId, isUpsell);

@@ -1177,7 +1177,15 @@ function CheckoutSimulation() {
 
     async function loadSuggestion() {
       try {
-        const discovery = await searchShop("I need a festive outfit under 4000");
+        const demoQueries = [
+          "festive kurta set under 3000",
+          "wedding saree under 5000",
+          "gift for my sister under 2000",
+          "ethnic wear for Diwali party",
+          "dupatta to match kurta under 1500",
+        ];
+        const demoQuery = demoQueries[Math.floor(Math.random() * demoQueries.length)];
+        const discovery = await searchShop(demoQuery);
         const upsell = discovery.upsell?.product;
         if (active && upsell) {
           setAgentSuggestion({
@@ -1194,9 +1202,9 @@ function CheckoutSimulation() {
         if (!active) return;
         if (suggestion?.item) {
           setAgentSuggestion({
-            item: cleanDisplayText(suggestion.item, "Handcrafted dupatta"),
-            price: Number(suggestion.price || 399),
-            reason: cleanDisplayText(suggestion.reason, "Adds a complementary festive finish to the current outfit."),
+            item: cleanDisplayText(suggestion.item, "Catalog suggestion"),
+            price: Number(suggestion.price || 0),
+            reason: cleanDisplayText(suggestion.reason, "Suggested from the current catalog context."),
           });
           return;
         }
@@ -1206,9 +1214,9 @@ function CheckoutSimulation() {
 
       if (active) {
         setAgentSuggestion({
-          item: "Handcrafted dupatta",
-          price: 399,
-          reason: "Adds a complementary festive finish to the current outfit.",
+          item: "No complementary suggestion",
+          price: 0,
+          reason: "No related catalog item was available for this context.",
         });
       }
     }

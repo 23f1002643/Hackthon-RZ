@@ -46,6 +46,19 @@ from .seed import reset_and_seed, seed_all
 
 app = FastAPI(title="Vastra Studio — Commerce Agent", version="1.0.0")
 
+_CATEGORY_IMAGES = {
+    "Sarees": "https://images.unsplash.com/photo-1610030469983-98e550d6193c?w=400&q=80",
+    "Kurtas": "https://images.unsplash.com/photo-1583391733956-6c78276477e1?w=400&q=80",
+    "Dupattas": "https://images.unsplash.com/photo-1617897903246-719242758050?w=400&q=80",
+    "Jewellery": "https://images.unsplash.com/photo-1535632066927-ab7c9ab60908?w=400&q=80",
+    "Bags": "https://images.unsplash.com/photo-1548036328-c9fa89d128fa?w=400&q=80",
+    "Footwear": "https://images.unsplash.com/photo-1603808033192-082d6919d3e1?w=400&q=80",
+    "Accessories": "https://images.unsplash.com/photo-1523293182086-7651a899d37f?w=400&q=80",
+    "Gifts": "https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=400&q=80",
+    "Lehengas": "https://images.unsplash.com/photo-1583391733956-6c78276477e1?w=400&q=80",
+    "Dresses": "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=400&q=80",
+}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -148,6 +161,19 @@ async def get_config(db: Session = Depends(get_db)):
             },
         }
     )
+
+
+@app.post("/api/admin/fix-images")
+async def fix_images(db: Session = Depends(get_db)):
+    products = db.query(Product).filter((Product.image_url.is_(None)) | (Product.image_url == "")).all()
+    updated = 0
+    for product in products:
+        image_url = _CATEGORY_IMAGES.get(product.category)
+        if image_url:
+            product.image_url = image_url
+            updated += 1
+    db.commit()
+    return ok({"updated": updated, "total": len(products)})
 
 
 @app.post("/api/agent/toggle")
@@ -309,14 +335,6 @@ async def archive_product(product_id: int, db: Session = Depends(get_db)):
 @app.post("/api/shop/search")
 async def shop_search(payload: ShopSearchRequest, db: Session = Depends(get_db)):
     config = _config(db)
-
-    message_type = llm.classify_message(payload.query)
-    if message_type != "shopping":
-        result = agent.run_discovery(db, payload.query, config, payload.context)
-        result["agent_active"] = config.agent_active
-        if not config.agent_active:
-            result["message"] = "Our shopping assistant is resting right now. Please browse the Vastra Studio catalog or try again when the agent is live."
-        return ok(result)
 
     # Merchant paused the agent -> deterministic catalog browse only (no AI reasoning/upsell).
     if not config.agent_active:

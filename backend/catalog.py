@@ -39,15 +39,16 @@ def _score(product: Product, query_tokens: List[str], occasion: Optional[str]) -
 
     score = 0.0
     for tok in query_tokens:
-        if tok in haystack_name:
+        variants = {tok, tok[:-1] if len(tok) > 3 and tok.endswith("s") else tok}
+        if any(variant in haystack_name for variant in variants):
             score += 5.0
-        if tok in tags:
+        if any(variant in tag for variant in variants for tag in tags):
             score += 4.0
-        if tok == category or tok == subcategory or tok in category:
+        if any(variant == category or variant == subcategory or variant in category for variant in variants):
             score += 3.5
-        if tok in occasions:
+        if any(variant in occasion_name for variant in variants for occasion_name in occasions):
             score += 3.0
-        if tok in haystack_desc:
+        if any(variant in haystack_desc for variant in variants):
             score += 1.5
 
     if occasion and occasion.lower() in occasions:

@@ -65,6 +65,22 @@ def test_empty_or_random_input_always_gets_a_seller_response(db, config):
 
     assert result["message"]
     assert result["recommendation"] is None
+    assert "blargh xyz qqq" in result["message"]
+
+
+def test_product_availability_question_enters_catalog_flow(db, config):
+    result = agent.run_discovery(db, "What products do you have?", config)
+
+    assert result["intent"]["intent"] == "shopping"
+    assert result["recommendation"] is not None
+
+
+def test_watch_request_enters_accessories_catalog_flow(db, config):
+    result = agent.run_discovery(db, "Any good watchs?", config)
+
+    assert result["intent"]["intent"] == "shopping"
+    assert result["intent"]["category"] == "Accessories"
+    assert result["recommendation"] is not None
 
 
 def test_full_paid_flow_decrements_inventory(db, config, fake_razorpay, find_product):

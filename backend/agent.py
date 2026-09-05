@@ -42,13 +42,12 @@ CANDIDATE_LIMIT = 8
 # --------------------------------------------------------------------------- #
 def node_parse_intent(state: ShopState) -> Dict[str, Any]:
     query = state["query"]
-    context = state.get("context", [])
+    steps = state.get("steps", []) + [{"key": "intent", "label": "Understanding your request", "status": "done"}]
     message_type = llm.classify_message(query)
     if message_type != "shopping":
         intent = {"intent": message_type, "source": "deterministic", "preferences": [], "constraints": []}
-        steps = state.get("steps", []) + [{"key": "intent", "label": "Understanding your request", "status": "done"}]
         return {"intent": intent, "steps": steps}
-    intent = llm.parse_intent("\n".join([*context[-3:], f"Current shopper request: {query}"]))
+    intent = llm.parse_intent(query)
     record_event(
         state["db"],
         event_type=EventType.INTENT_PARSED,
@@ -57,7 +56,6 @@ def node_parse_intent(state: ShopState) -> Dict[str, Any]:
         cart_id=None,
         metadata={"query": query, "intent": intent},
     )
-    steps = state.get("steps", []) + [{"key": "intent", "label": "Understanding your request", "status": "done"}]
     return {"intent": intent, "steps": steps}
 
 
@@ -72,6 +70,7 @@ def node_search_catalog(state: ShopState) -> Dict[str, Any]:
         occasion=intent.get("occasion"),
         max_price=intent.get("budget"),
         gender=intent.get("gender"),
+        tags=[*intent.get("preferences", []), *intent.get("constraints", [])],
         in_stock_only=True,
         limit=CANDIDATE_LIMIT,
         allowed_categories=catalog.FASHION_CATEGORIES,
@@ -246,11 +245,7 @@ def run_discovery(db: Session, query: str, config: MerchantConfig, context: Opti
 
     intent = final.get("intent", {})
     message_type = intent.get("intent", "unclear")
-    responses = {
-        "greeting": "Hi! Tell me what you are shopping for, including the occasion, style, or budget.",
-        "unclear": "I am Vastra Studio's shopping assistant, so I can help you find products, compare options, or build a cart. What are you looking to shop for?",
-    }
-    response = responses.get(message_type)
+    response = llm.seller_response(query, message_type) if message_type in {"greeting", "unclear"} else None
     if response is None and not final.get("candidates"):
         response = "I couldn't find a close match in the Vastra Studio catalog right now. Try another fashion category, occasion, color, or budget."
     return {
