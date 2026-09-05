@@ -24,10 +24,13 @@ export async function fetchNotifications() {
   return res.json();
 }
 
+export async function fetchConfig() { return request('/api/config'); }
+
 export async function fetchCustomers() { return request('/api/customers'); }
 export async function fetchOrders() { return request('/api/orders'); }
 export async function fetchProducts(query = '') { return request(`/api/products?q=${encodeURIComponent(query)}&limit=100`); }
-export async function importCatalog() { return request('/api/catalog/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }); }
+export async function importCatalog(source: 'dummyjson' | 'brightdata' = 'brightdata') { return request(`/api/catalog/import?source=${source}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }); }
+export async function createProduct(product: Record<string, unknown>) { return request('/api/products', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(product) }); }
 
 async function request(path: string, init?: RequestInit) {
   const res = await fetch(`${BASE}${path}`, init);
@@ -56,11 +59,11 @@ export async function fetchCustomerOrders(customerId: number) {
   return request(`/api/customers/${customerId}/orders`);
 }
 
-export async function searchShop(query: string) {
+export async function searchShop(query: string, context: string[] = []) {
   return request('/api/shop/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, context }),
   });
 }
 
@@ -88,4 +91,4 @@ export async function toggleAgent(active: boolean) {
   return request('/api/agent/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }) });
 }
 
-export default { fetchAuditLogs, fetchMetrics, fetchChartData, fetchNotifications, fetchCustomers, fetchOrders, fetchProducts, importCatalog, createCart, getCart, getOrCreateCustomer, fetchCustomerOrders, searchShop, addCartItem, removeCartItem, createOrder, verifyPayment, markPaymentFailed, toggleAgent };
+export default { fetchAuditLogs, fetchMetrics, fetchChartData, fetchNotifications, fetchConfig, fetchCustomers, fetchOrders, fetchProducts, importCatalog, createProduct, createCart, getCart, getOrCreateCustomer, fetchCustomerOrders, searchShop, addCartItem, removeCartItem, createOrder, verifyPayment, markPaymentFailed, toggleAgent };

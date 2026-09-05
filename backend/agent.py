@@ -23,6 +23,7 @@ from .models import EventSource, MerchantConfig, Product
 
 class ShopState(TypedDict, total=False):
     query: str
+    context: List[str]
     db: Session
     config: MerchantConfig
     intent: Dict[str, Any]
@@ -41,12 +42,13 @@ CANDIDATE_LIMIT = 8
 # --------------------------------------------------------------------------- #
 def node_parse_intent(state: ShopState) -> Dict[str, Any]:
     query = state["query"]
+    context = state.get("context", [])
     message_type = llm.classify_message(query)
     if message_type != "shopping":
         intent = {"intent": message_type, "source": "deterministic", "preferences": [], "constraints": []}
         steps = state.get("steps", []) + [{"key": "intent", "label": "Understanding your request", "status": "done"}]
         return {"intent": intent, "steps": steps}
-    intent = llm.parse_intent(query)
+    intent = llm.parse_intent("\n".join([*context[-3:], f"Current shopper request: {query}"]))
     record_event(
         state["db"],
         event_type=EventType.INTENT_PARSED,
@@ -72,6 +74,7 @@ def node_search_catalog(state: ShopState) -> Dict[str, Any]:
         gender=intent.get("gender"),
         in_stock_only=True,
         limit=CANDIDATE_LIMIT,
+        allowed_categories=catalog.FASHION_CATEGORIES,
     )
     candidates = [p.to_dict() for p in products]
     record_event(
@@ -222,25 +225,34 @@ def graph_backend() -> str:
     return _graph_backend
 
 
-def run_discovery(db: Session, query: str, config: MerchantConfig) -> Dict[str, Any]:
+def run_discovery(db: Session, query: str, config: MerchantConfig, context: Optional[List[str]] = None) -> Dict[str, Any]:
     """Execute the discovery pipeline and return the assembled result for the API."""
-    initial: ShopState = {"query": query, "db": db, "config": config, "steps": []}
+    initial: ShopState = {"query": query, "context": context or [], "db": db, "config": config, "steps": []}
 
     graph = _get_graph()
     if graph is not None:
         try:
             final = graph.invoke(initial)
         except Exception:
-            final = _run_sequential(initial)
+            try:
+                final = _run_sequential(initial)
+            except Exception:
+                final = {"intent": {"intent": "unclear"}, "candidates": [], "recommendation": None, "upsell": None, "upsell_options": [], "steps": []}
     else:
-        final = _run_sequential(initial)
+        try:
+            final = _run_sequential(initial)
+        except Exception:
+            final = {"intent": {"intent": "unclear"}, "candidates": [], "recommendation": None, "upsell": None, "upsell_options": [], "steps": []}
 
     intent = final.get("intent", {})
     message_type = intent.get("intent", "unclear")
     responses = {
         "greeting": "Hi! Tell me what you are shopping for, including the occasion, style, or budget.",
-        "unclear": "I can help you shop. Tell me what you need, for whom, and your approximate budget.",
+        "unclear": "I am Vastra Studio's shopping assistant, so I can help you find products, compare options, or build a cart. What are you looking to shop for?",
     }
+    response = responses.get(message_type)
+    if response is None and not final.get("candidates"):
+        response = "I couldn't find a close match in the Vastra Studio catalog right now. Try another fashion category, occasion, color, or budget."
     return {
         "intent": {k: intent.get(k) for k in ("intent", "occasion", "recipient", "category", "budget", "gender", "preferences", "constraints")},
         "products": final.get("candidates", []),
@@ -249,7 +261,7 @@ def run_discovery(db: Session, query: str, config: MerchantConfig) -> Dict[str, 
         "upsell_options": final.get("upsell_options", []),
         "steps": final.get("steps", []),
         "backend": _graph_backend,
-        "message": responses.get(message_type),
+        "message": response,
     }
 
 

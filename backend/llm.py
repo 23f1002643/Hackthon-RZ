@@ -101,6 +101,7 @@ _CATEGORY_KEYWORDS = {
 }
 
 _GREETING_WORDS = {"hi", "hii", "hello", "hey", "thanks", "thank you", "good morning", "good evening", "good afternoon"}
+_NON_FASHION_WORDS = {"laptop", "computer", "phone", "smartphone", "tablet", "camera", "television", "tv", "electronics", "refrigerator", "fridge", "microwave", "software", "python", "javascript", "sql", "code", "malware", "quantum", "recursion", "essay", "joke"}
 _SHOPPING_SIGNALS = set(sum(_OCCASION_KEYWORDS.values(), []) + sum(_CATEGORY_KEYWORDS.values(), []) + ["buy", "find", "need", "looking", "show", "want", "under", "budget", "price", "₹", "rs"])
 
 
@@ -109,7 +110,10 @@ def classify_message(query: str) -> str:
     normalized = re.sub(r"[^a-z0-9₹ ]+", " ", (query or "").lower()).strip()
     if normalized in _GREETING_WORDS or len(normalized.split()) <= 2 and normalized in _GREETING_WORDS:
         return "greeting"
-    if any(signal in normalized for signal in _SHOPPING_SIGNALS):
+    tokens = set(normalized.split())
+    if tokens.intersection(_NON_FASHION_WORDS):
+        return "unclear"
+    if any((signal in tokens) or (" " in signal and signal in normalized) for signal in _SHOPPING_SIGNALS):
         return "shopping"
     return "unclear"
 

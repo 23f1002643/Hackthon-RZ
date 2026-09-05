@@ -14,6 +14,12 @@ from sqlalchemy.orm import Session
 
 from .models import DEMO_MERCHANT_ID, Product, ProductRelation
 
+FASHION_CATEGORIES = {
+    "Sarees", "Kurtas", "Dupattas", "Jewellery", "Bags", "Accessories",
+    "Gifts", "Footwear", "Dresses", "Shirts", "Trousers", "Lehengas",
+    "Festive Wear", "Casual Wear", "Tops",
+}
+
 
 def _tokens(text: str) -> List[str]:
     return [t for t in "".join(c.lower() if c.isalnum() else " " for c in (text or "")).split() if len(t) > 1]
@@ -67,6 +73,7 @@ def search_products(
     in_stock_only: bool = True,
     limit: int = 10,
     merchant_id: str = DEMO_MERCHANT_ID,
+    allowed_categories: Optional[set[str]] = None,
 ) -> List[Product]:
     """Return the best-matching products, most relevant first."""
     stmt = select(Product).where(Product.merchant_id == merchant_id, Product.active.is_(True))
@@ -79,6 +86,8 @@ def search_products(
         stmt = stmt.where(Product.price <= int(max_price))
     if gender and gender in {"women", "men"}:
         stmt = stmt.where(Product.gender.in_([gender, "unisex"]))
+    if allowed_categories:
+        stmt = stmt.where(Product.category.in_(allowed_categories))
     if in_stock_only:
         stmt = stmt.where(Product.stock > 0)
 

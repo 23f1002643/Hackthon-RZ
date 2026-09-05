@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from . import agent, brightdata, cart_service, catalog, llm, metrics, orders, razorpay_tools
+from . import agent, brightdata, cart_service, catalog, dummyjson, llm, metrics, orders, razorpay_tools
 from .audit import EventType, get_recent_events, record_event
 from .cart_service import CartError
 from .db import get_db, init_db
@@ -262,9 +262,14 @@ async def list_orders(db: Session = Depends(get_db)):
 
 
 @app.post("/api/catalog/import")
-async def import_catalog(payload: Optional[dict] = None, db: Session = Depends(get_db)):
+async def import_catalog(source: str = "brightdata", payload: Optional[dict] = None, db: Session = Depends(get_db)):
     try:
-        result = brightdata.import_catalog(db, payload=payload or None)
+        if source == "dummyjson":
+            result = dummyjson.import_catalog(db)
+        elif source == "brightdata":
+            result = brightdata.import_catalog(db, payload=payload or None)
+        else:
+            return _error_response("INVALID_CATALOG_SOURCE", "Supported catalog sources are dummyjson and brightdata.")
     except brightdata.BrightDataError as exc:
         return _error_response("CATALOG_IMPORT_FAILED", str(exc), status=502)
     return ok({"import": result})
@@ -272,7 +277,7 @@ async def import_catalog(payload: Optional[dict] = None, db: Session = Depends(g
 
 @app.post("/api/products")
 async def create_product(payload: ProductIn, db: Session = Depends(get_db)):
-    product = Product(merchant_id=DEMO_MERCHANT_ID, **payload.model_dump())
+    product = Product(merchant_id=DEMO_MERCHANT_ID, source="manual", **payload.model_dump())
     db.add(product)
     db.commit()
     db.refresh(product)
@@ -305,6 +310,14 @@ async def archive_product(product_id: int, db: Session = Depends(get_db)):
 async def shop_search(payload: ShopSearchRequest, db: Session = Depends(get_db)):
     config = _config(db)
 
+    message_type = llm.classify_message(payload.query)
+    if message_type != "shopping":
+        result = agent.run_discovery(db, payload.query, config, payload.context)
+        result["agent_active"] = config.agent_active
+        if not config.agent_active:
+            result["message"] = "Our shopping assistant is resting right now. Please browse the Vastra Studio catalog or try again when the agent is live."
+        return ok(result)
+
     # Merchant paused the agent -> deterministic catalog browse only (no AI reasoning/upsell).
     if not config.agent_active:
         intent = llm._deterministic_intent(payload.query)
@@ -316,21 +329,23 @@ async def shop_search(payload: ShopSearchRequest, db: Session = Depends(get_db))
             max_price=intent.get("budget"),
             gender=intent.get("gender"),
             limit=agent.CANDIDATE_LIMIT,
+            allowed_categories=catalog.FASHION_CATEGORIES,
         )
         return ok(
             {
                 "agent_active": False,
-                "intent": {k: intent.get(k) for k in ("occasion", "recipient", "category", "budget", "gender")},
+                "intent": {"intent": "shopping", **{k: intent.get(k) for k in ("occasion", "recipient", "category", "budget", "gender")}},
                 "products": [p.to_dict() for p in products],
                 "recommendation": None,
                 "upsell": None,
                 "upsell_options": [],
+                "message": "Our shopping assistant is resting right now. I can still show fashion products from the Vastra Studio catalog, but AI recommendations are paused.",
                 "steps": [{"key": "catalog", "label": "Browsing catalog (agent paused)", "status": "done"}],
                 "backend": "paused",
             }
         )
 
-    result = agent.run_discovery(db, payload.query, config)
+    result = agent.run_discovery(db, payload.query, config, payload.context)
     result["agent_active"] = True
     return ok(result)
 

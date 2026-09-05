@@ -14,6 +14,8 @@ type Discovery = {
   upsell_options?: { product: { id: number; name: string; price: number; image_url?: string }; reason: string }[];
 };
 
+type ChatMessage = { role: "shopper" | "assistant"; text: string };
+
 declare global {
   interface Window {
     Razorpay?: new (options: Record<string, unknown>) => { open: () => void };
@@ -32,6 +34,8 @@ function Shop() {
   const [loading, setLoading] = useState(false);
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [history, setHistory] = useState<any[]>([]);
+  const [assistantMessage, setAssistantMessage] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
 
   useEffect(() => {
     const script = document.createElement("script");
@@ -56,18 +60,11 @@ function Shop() {
     setLoading(true);
     setOrder(null);
     try {
-      const result = await searchShop(query);
+      const result = await searchShop(query, messages.map((message) => `${message.role}: ${message.text}`));
       setDiscovery(result);
-      if (result.recommendation?.product) {
-        const customer = await getOrCreateCustomer({ name: "Demo Shopper", email: "demo@vastrastudio.local" });
-        const id = customer.customer.id as number;
-        window.localStorage.setItem("vastra-demo-customer-id", String(id));
-        setCustomerId(id);
-        const created = await createCart(result.intent?.budget, true, id);
-        window.localStorage.setItem("vastra-demo-cart-id", String(created.cart.id));
-        const added = await addCartItem(created.cart.id, result.recommendation.product.id);
-        setCart(added.cart);
-      }
+      const message = result.message || (result.recommendation ? `I found ${result.recommendation.product.name} because ${result.recommendation.reason}` : "I couldn't find a close match. Try another fashion category, occasion, color, or budget.");
+      setAssistantMessage(message);
+      setMessages((current) => [...current, { role: "shopper", text: query }, { role: "assistant", text: message }].slice(-8));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "We could not search the catalog.");
     } finally {
@@ -75,15 +72,29 @@ function Shop() {
     }
   }
 
-  async function addUpsell() {
-    if (!cart || !discovery?.upsell?.product) return;
+  async function addProductToCart(productId: number, isUpsell = false) {
     try {
-      const result = await addCartItem(cart.id, discovery.upsell.product.id, true);
+      let activeCart = cart;
+      if (!activeCart) {
+        const customer = await getOrCreateCustomer({ name: "Demo Shopper", email: "demo@vastrastudio.local" });
+        const id = customer.customer.id as number;
+        window.localStorage.setItem("vastra-demo-customer-id", String(id));
+        setCustomerId(id);
+        const created = await createCart(discovery?.intent?.budget, true, id);
+        window.localStorage.setItem("vastra-demo-cart-id", String(created.cart.id));
+        activeCart = created.cart;
+      }
+      const result = await addCartItem(activeCart.id, productId, isUpsell);
       setCart(result.cart);
       toast.success("Added to your cart");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not update the cart.");
+      toast.error(error instanceof Error ? error.message : "Could not add that product.");
     }
+  }
+
+  async function addUpsell() {
+    if (!cart || !discovery?.upsell?.product) return;
+    await addProductToCart(discovery.upsell.product.id, true);
   }
 
   async function removeItem(itemId: number) {
@@ -98,14 +109,7 @@ function Shop() {
   }
 
   async function addSuggestion(productId: number) {
-    if (!cart) return;
-    try {
-      const result = await addCartItem(cart.id, productId, true);
-      setCart(result.cart);
-      toast.success("Added to your cart");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not add that suggestion.");
-    }
+    await addProductToCart(productId, true);
   }
 
   async function confirmOrder() {
@@ -168,22 +172,24 @@ function Shop() {
             <input value={query} onChange={(event) => setQuery(event.target.value)} className="min-h-12 flex-1 rounded-md border border-border bg-card px-4 text-sm outline-none focus:border-primary" onKeyDown={(event) => event.key === "Enter" && discover()} />
             <Button onClick={discover} disabled={loading} className="min-h-12 bg-brand-gradient text-primary-foreground"><Sparkles className="size-4" /> {loading ? "Finding matches..." : "Find products"}</Button>
           </div>
+          {messages.length > 0 && <div className="mt-8 max-w-3xl space-y-2">{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`max-w-[90%] border px-4 py-3 text-sm ${message.role === "shopper" ? "ml-auto border-border bg-card" : "border-primary/30 bg-primary/5"}`}><span className="mr-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{message.role === "shopper" ? "You" : "Vastra Studio"}</span>{message.text}</div>)}</div>}
         </div>
       </section>
 
       <section className="mx-auto grid max-w-6xl gap-6 px-5 py-10 lg:grid-cols-[1fr_360px] lg:px-16">
         <div className="space-y-6">
+          {assistantMessage && <div className="border border-primary/30 bg-primary/5 p-4 text-sm text-foreground"><Sparkles className="mr-2 inline size-4 text-primary" />{assistantMessage}</div>}
           {recommendation ? (
             <article className="border border-border bg-card p-6 shadow-[var(--shadow-panel)]">
               <p className="text-xs font-medium uppercase tracking-[0.18em] text-primary">Recommended from the catalog</p>
               <div className="mt-5 flex flex-col gap-5 sm:flex-row sm:items-center">
-                <div className="flex size-32 shrink-0 items-center justify-center rounded-md bg-muted text-primary"><ShoppingBag className="size-10" /></div>
-                <div><h2 className="text-2xl font-semibold">{recommendation.name}</h2><p className="mt-2 text-sm text-muted-foreground">{recommendation.description}</p><p className="mt-4 text-2xl font-semibold">{money(recommendation.price)}</p></div>
+                <div className="flex size-32 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted text-xs text-muted-foreground"><img src={recommendation.image_url || ""} alt={recommendation.name} className="h-full w-full object-cover" onError={(event) => { event.currentTarget.style.display = "none"; }} /><span>Image unavailable</span></div>
+                <div><h2 className="text-2xl font-semibold">{recommendation.name}</h2><p className="mt-2 text-sm text-muted-foreground">{recommendation.description}</p><p className="mt-4 text-2xl font-semibold">{money(recommendation.price)}</p><Button className="mt-4" onClick={() => addProductToCart(recommendation.id)}>Add to cart</Button></div>
               </div>
               <div className="mt-6 border-l-2 border-primary pl-4 text-sm text-muted-foreground"><span className="font-medium text-foreground">Why this match? </span>{discovery?.recommendation?.reason}</div>
             </article>
           ) : <div className="border border-dashed border-border p-10 text-center text-sm text-muted-foreground">Your recommendation will appear here.</div>}
-          {(discovery?.upsell_options?.length || 0) > 0 && <section className="border border-border bg-card p-5"><p className="text-xs font-medium uppercase tracking-[0.15em] text-primary">Complete the look</p><h2 className="mt-2 text-lg font-semibold">Curated suggestions</h2><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{discovery?.upsell_options?.map((suggestion) => { const inCart = cart?.items?.some((item: any) => item.product_id === suggestion.product.id); return <article key={suggestion.product.id} className="border border-border p-4"><div className="flex h-20 items-center justify-center bg-muted text-primary"><ShoppingBag className="size-6" /></div><h3 className="mt-3 truncate text-sm font-semibold">{suggestion.product.name}</h3><p className="mt-1 text-xs text-muted-foreground">{suggestion.reason}</p><div className="mt-3 flex items-center justify-between gap-2"><span className="font-semibold">{money(suggestion.product.price)}</span><Button size="sm" variant="outline" disabled={inCart} onClick={() => addSuggestion(suggestion.product.id)}>{inCart ? "Added" : "Add"}</Button></div></article>; })}</div></section>}
+          {(discovery?.upsell_options?.length || 0) > 0 && <section className="border border-border bg-card p-5"><p className="text-xs font-medium uppercase tracking-[0.15em] text-primary">Complete the look</p><h2 className="mt-2 text-lg font-semibold">Curated suggestions</h2><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{discovery?.upsell_options?.map((suggestion) => { const inCart = cart?.items?.some((item: any) => item.product_id === suggestion.product.id); return <article key={suggestion.product.id} className="border border-border p-4"><div className="flex h-20 items-center justify-center overflow-hidden bg-muted text-xs text-muted-foreground"><img src={suggestion.product.image_url || ""} alt={suggestion.product.name} className="h-full w-full object-cover" onError={(event) => { event.currentTarget.style.display = "none"; }} /><span>Image unavailable</span></div><h3 className="mt-3 truncate text-sm font-semibold">{suggestion.product.name}</h3><p className="mt-1 text-xs text-muted-foreground">{suggestion.reason}</p><div className="mt-3 flex items-center justify-between gap-2"><span className="font-semibold">{money(suggestion.product.price)}</span><Button size="sm" variant="outline" disabled={inCart} onClick={() => addSuggestion(suggestion.product.id)}>{inCart ? "Added" : "Add"}</Button></div></article>; })}</div></section>}
         </div>
 
         <aside className="h-fit border border-border bg-card p-5 shadow-[var(--shadow-panel)]"><div className="flex items-center justify-between"><h2 className="font-semibold">Your cart</h2><ShoppingBag className="size-4 text-muted-foreground" /></div>{cart?.items?.length ? <><div className="mt-5 space-y-3">{cart.items.map((item: any) => <div key={item.id} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0"><span className="block truncate">{item.name}</span><span className="text-muted-foreground">× {item.quantity}</span></span><span className="flex shrink-0 items-center gap-2"><span className="font-medium">{money(item.line_total)}</span><Button type="button" variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" title={`Remove ${item.name}`} aria-label={`Remove ${item.name}`} onClick={() => removeItem(item.id)}>×</Button></span></div>)}</div><div className="mt-5 border-t border-border pt-4"><div className="flex justify-between font-semibold"><span>Total</span><span>{money(cart.total)}</span></div>{cart.budget != null && <p className={`mt-2 text-xs ${cart.over_budget ? "text-destructive" : "text-success"}`}>{cart.over_budget ? "Over your budget" : `${money(cart.budget_remaining)} remaining in budget`}</p>}<Button className="mt-5 w-full" onClick={confirmOrder} disabled={loading || cart.over_budget || order?.status === "COMPLETED"}>{loading ? "Opening secure checkout..." : "Confirm and continue"}<ArrowRight className="size-4" /></Button>{order?.status === "COMPLETED" ? <div className="mt-4 border border-success/40 bg-success/10 p-3 text-sm"><Check className="mb-1 size-4 text-success" />Payment verified. Order {order.order_number} is confirmed.</div> : order?.status === "PAYMENT_FAILED" ? <div className="mt-4 border border-destructive/40 bg-destructive/10 p-3 text-sm">Payment was not completed. Your cart is still safe; try again when ready.</div> : null}</div></> : <p className="mt-8 text-sm text-muted-foreground">Add a recommendation to begin.</p>}</aside>

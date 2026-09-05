@@ -40,7 +40,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Toaster } from "@/components/ui/sonner";
-import { fetchAuditLogs, fetchChartData, fetchCustomers, fetchMetrics, fetchNotifications, fetchOrders, fetchProducts, importCatalog, searchShop, toggleAgent } from "@/lib/api";
+import { createProduct, fetchAuditLogs, fetchChartData, fetchConfig, fetchCustomers, fetchMetrics, fetchNotifications, fetchOrders, fetchProducts, importCatalog, searchShop, toggleAgent } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/")({
@@ -198,16 +198,17 @@ function getEntryAmount(entry: DashboardLog) {
 }
 
 function getEntryLabel(entry: DashboardLog) {
-  return cleanDisplayText(entry.title) || cleanDisplayText(entry.label) || humanizeAction(entry.action);
+  return cleanDisplayText(entry.title) || cleanDisplayText(entry.label) || humanizeAction(entry.action || entry.event_type);
 }
 
 function getEntryReason(entry: DashboardLog) {
   return (
+    cleanDisplayText(entry.description) ||
     cleanDisplayText(entry.reason) ||
     cleanDisplayText(entry?.outputs?.suggestion?.reason) ||
     cleanDisplayText(entry?.outputs?.outputs?.suggestion?.reason) ||
     cleanDisplayText(entry.detail) ||
-    "No additional context."
+    cleanDisplayText(entry.event_type, "Event recorded")
   );
 }
 
@@ -217,6 +218,8 @@ function getEntryTime(entry: DashboardLog) {
 }
 
 function getEntryOutcome(entry: DashboardLog) {
+  if (["PAYMENT_FAILED", "PAYMENT_VERIFICATION_FAILED", "AGENT_ERROR"].includes(String(entry.event_type))) return "Failed";
+  if (["PAYMENT_VERIFIED", "ORDER_COMPLETED", "CART_UPDATED", "UPSELL_ACCEPTED"].includes(String(entry.event_type))) return "Completed";
   if (entry.error || entry.type === "error") return "Failed";
   if (entry.action === "upsell_decision" && !(entry?.outputs?.decision ?? entry?.outputs?.outputs?.decision)) return "Skipped";
   return "Recorded";
@@ -226,7 +229,7 @@ function getEntryOutcomeClass(entry: DashboardLog) {
   const outcome = getEntryOutcome(entry);
   if (outcome === "Failed") return "text-destructive";
   if (outcome === "Skipped") return "text-warning";
-  return "text-success";
+  return outcome === "Completed" ? "text-success" : "text-muted-foreground";
 }
 
 function getEntryValue(entry: DashboardLog) {
@@ -293,6 +296,12 @@ export function Dashboard() {
   useEffect(() => {
     setHiddenAuditIds(readStoredIds(auditDismissedKey));
     setDismissedNotificationIds(readStoredIds(notificationDismissedKey));
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchConfig().then((result) => { if (mounted) setAgentLive(Boolean(result.merchant?.agent_active)); }).catch(() => undefined);
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
@@ -1143,7 +1152,7 @@ function RecentActions({ logs = [] }: { logs?: DashboardLog[] }) {
           <div key={getEntryId(item)} className="flex items-center justify-between px-5 py-3">
             <div className="flex items-center gap-2.5">
               <span className="size-1.5 rounded-full bg-success" />
-              <span className="text-xs">{getEntryLabel(item)}</span>
+              <span className="min-w-0"><span className={`block text-xs font-medium ${getEntryOutcomeClass(item)}`}>{getEntryLabel(item)} · {getEntryOutcome(item)}</span><span className="block truncate text-[11px] text-muted-foreground">{getEntryReason(item)}</span></span>
             </div>
             <span className="text-[11px] tabular-nums text-muted-foreground">{getEntryTime(item)}</span>
           </div>
@@ -1436,11 +1445,13 @@ function MerchantCatalog() {
   const [products, setProducts] = useState<any[]>([]);
   const [importing, setImporting] = useState(false);
   const [status, setStatus] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ name: "", description: "", price: "", category: "Accessories", brand: "", stock: "10", image_url: "", rating: "4.5", tags: "", occasion: "", gender: "unisex", color: "", material: "", style: "" });
   useEffect(() => { fetchProducts().then((result) => setProducts(result.products || [])).catch(() => setProducts([])); }, []);
   async function runImport() {
     setImporting(true);
     try {
-      const result = await importCatalog();
+      const result = await importCatalog("brightdata");
       const summary = result.import;
       setStatus(`${summary.created} created, ${summary.updated} updated, ${summary.skipped} skipped`);
       const refreshed = await fetchProducts();
@@ -1449,5 +1460,17 @@ function MerchantCatalog() {
       setStatus(error instanceof Error ? error.message : "Catalog import failed");
     } finally { setImporting(false); }
   }
-  return <section className="border border-border bg-card shadow-[var(--shadow-panel)]"><div className="flex items-center justify-between border-b border-border px-4 py-3.5"><div><h2 className="text-sm font-medium">Catalog</h2><p className="mt-1 text-xs text-muted-foreground">{products.length} local products · SQLite source of truth</p></div><Button size="sm" onClick={runImport} disabled={importing}>{importing ? "Importing..." : "Import Bright Data"}</Button></div>{status && <p className="border-b border-border bg-muted/30 px-5 py-3 text-xs text-muted-foreground">{status}</p>}<div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">{products.slice(0, 30).map((product) => <div key={product.id} className="border border-border p-4"><div className="flex items-center justify-between gap-2"><p className="truncate text-sm font-medium">{product.name}</p><span className="text-xs text-success">{product.stock} in stock</span></div><p className="mt-2 text-xs text-muted-foreground">{product.category} · {product.brand || "Unbranded"}</p><p className="mt-3 font-semibold">{formatCurrency(product.price)}</p></div>)}</div></section>;
+  async function saveProduct(event: React.FormEvent) {
+    event.preventDefault();
+    try {
+      await createProduct({ ...form, price: Number(form.price), stock: Number(form.stock), rating: Number(form.rating), tags: form.tags.split(",").map((item) => item.trim()).filter(Boolean), occasion: form.occasion.split(",").map((item) => item.trim()).filter(Boolean), source: "manual" });
+      const refreshed = await fetchProducts();
+      setProducts(refreshed.products || []);
+      setStatus("Manual product added to the local catalog.");
+      setShowAdd(false);
+      setForm({ name: "", description: "", price: "", category: "Accessories", brand: "", stock: "10", image_url: "", rating: "4.5", tags: "", occasion: "", gender: "unisex", color: "", material: "", style: "" });
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not add product"); }
+  }
+  const field = (key: keyof typeof form, label: string, type = "text") => <label className="text-xs text-muted-foreground">{label}<input required={key === "name" || key === "price"} type={type} value={form[key]} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} className="mt-1 h-9 w-full rounded border border-border bg-background px-2 text-sm text-foreground" /></label>;
+  return <section className="border border-border bg-card shadow-[var(--shadow-panel)]"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3.5"><div><h2 className="text-sm font-medium">Catalog</h2><p className="mt-1 text-xs text-muted-foreground">{products.length} local products · SQLite source of truth</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setShowAdd((value) => !value)}>+ Add Product</Button><Button size="sm" onClick={async () => { setImporting(true); try { const result = await importCatalog("dummyjson"); setStatus(`DummyJSON: ${result.import.created} created, ${result.import.updated} updated`); setProducts((await fetchProducts()).products || []); } catch (error) { setStatus(error instanceof Error ? error.message : "DummyJSON import failed"); } finally { setImporting(false); } }} disabled={importing}>Import DummyJSON</Button><Button size="sm" variant="outline" onClick={runImport} disabled={importing}>Import Bright Data</Button></div></div>{showAdd && <form onSubmit={saveProduct} className="grid gap-3 border-b border-border bg-muted/20 p-5 sm:grid-cols-2 lg:grid-cols-4">{field("name", "Product name")}{field("price", "Price", "number")}{field("category", "Category")}{field("brand", "Brand")}{field("stock", "Stock", "number")}{field("image_url", "Image URL")}{field("color", "Color")}{field("material", "Material")}{field("style", "Style")}{field("occasion", "Occasion, comma-separated")}{field("tags", "Tags, comma-separated")}<label className="text-xs text-muted-foreground sm:col-span-2">Description<textarea value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} className="mt-1 min-h-20 w-full rounded border border-border bg-background p-2 text-sm text-foreground" /></label><div className="flex items-end"><Button type="submit">Save product</Button></div></form>}{status && <p className="border-b border-border bg-muted/30 px-5 py-3 text-xs text-muted-foreground">{status}</p>}<div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">{products.slice(0, 30).map((product) => <div key={product.id} className="border border-border p-4"><div className="flex h-28 items-center justify-center overflow-hidden bg-muted text-primary"><img src={product.image_url || ""} alt="" className="h-full w-full object-cover" onError={(event) => { event.currentTarget.style.display = "none"; }} /><Package className="size-6" /></div><div className="mt-3 flex items-center justify-between gap-2"><p className="truncate text-sm font-medium">{product.name}</p><span className="text-xs text-success">{product.stock} in stock</span></div><p className="mt-2 text-xs text-muted-foreground">{product.category} · {product.brand || "Unbranded"} · {product.source}</p><p className="mt-3 font-semibold">{formatCurrency(product.price)}</p></div>)}</div></section>;
 }

@@ -1,6 +1,6 @@
 # Vastra Studio AI Commerce
 
-Vastra Studio is a production-shaped AI commerce application for the Razorpay AI Buildathon. A shopper describes an intent in natural language, the system searches a real seeded merchant catalog, proposes a contextual budget-aware add-on, creates a server-authoritative cart, and starts Razorpay Test Mode Checkout. A merchant can then inspect verified revenue, order activity, policy controls, notifications, and the complete audit trail.
+Vastra Studio is a production-shaped AI commerce application for the Razorpay AI Buildathon. A shopper describes an intent in natural language, the system searches one local catalog assembled from DummyJSON, optional Bright Data imports, seeded products, and manual merchant products, proposes contextual budget-aware add-ons, creates a server-authoritative cart, and starts Razorpay Test Mode Checkout.
 
 ## Product routes
 
@@ -16,9 +16,13 @@ Authentication is intentionally simplified for this hackathon demonstration. Pro
 
 ```mermaid
 flowchart LR
+    Dummy[DummyJSON importer] --> Normalize[Catalog normalization]
+    Bright[Bright Data importer] --> Normalize
+    Manual[Merchant manual products] --> Normalize
+    Normalize --> Catalog[(SQLite catalog)]
     Buyer[Buyer UI /shop] --> Search[FastAPI shop search]
     Search --> Intent[Intent parser]
-    Intent --> Catalog[(SQLite catalog)]
+    Intent --> Catalog
     Catalog --> Rank[Candidate ranking]
     Rank --> Cart[Server cart]
     Cart --> Policy[Policy engine]
@@ -37,6 +41,7 @@ flowchart LR
 - **Frontend:** user experience, route state, loading states, and Razorpay Checkout launch.
 - **FastAPI:** structured API responses, request validation, orchestration, and error translation.
 - **Catalog service:** deterministic database filtering and relevance ranking.
+- **Catalog sources:** DummyJSON is the primary optional baseline importer; Bright Data is an optional backend-only source; manual products are merchant-owned rows. All are persisted locally before retrieval.
 - **Agent/LLM layer:** intent parsing, candidate ranking, recommendation explanations, and fallback behavior only.
 - **Cart/order services:** authoritative prices, totals, inventory checks, order state, and idempotency.
 - **Policy engine:** maximum order value, maximum upsell value, budget, inventory, discount, and confirmation rules.
@@ -57,6 +62,7 @@ backend/
   seed_products.py     Vastra Studio catalog and relations
   catalog.py           Search, inventory, and related-product services
   brightdata.py        Bright Data normalization and idempotent ingestion
+  dummyjson.py         Paginated DummyJSON fashion/lifestyle importer
   agent.py             Discovery state graph and deterministic fallback
   llm.py               NVIDIA-compatible reasoning boundary
   cart_service.py      Server-side cart and total calculation
@@ -174,6 +180,16 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/catalog/import
 
 The importer accepts a product list under `products`, `items`, `results`, or `data`. It normalizes names, prices, currency, stock, image/source URLs, brand, ratings, reviews, attributes, tags, and occasions. Imported rows are marked `source=brightdata` and deduplicated by external product id or name. Missing credentials or an unavailable service returns a useful error while the seeded SQLite catalog continues working.
 
+## DummyJSON catalog ingestion
+
+DummyJSON is the primary optional baseline source and does not run during shopper searches. It fetches the available catalog in pages, keeps fashion/lifestyle categories such as dresses, jewellery, bags, footwear, shirts, watches, sunglasses, beauty, fragrances, and tops, and stores normalized rows locally with `source=dummyjson` and a preserved external id.
+
+```powershell
+Invoke-RestMethod -Method Post "http://127.0.0.1:8000/api/catalog/import?source=dummyjson" -ContentType "application/json" -Body '{}'
+```
+
+The import is idempotent. A second run updates existing DummyJSON rows instead of duplicating them. If DummyJSON is unavailable, the existing local catalog remains usable.
+
 ## API reference
 
 All API responses use this envelope:
@@ -196,6 +212,11 @@ GET  /api/products?q=&category=&occasion=&limit=24
 GET  /api/products/{product_id}
 GET  /api/categories
 POST /api/shop/search          {"query":"..."}
+POST /api/catalog/import?source=dummyjson
+POST /api/catalog/import?source=brightdata
+POST /api/products             # validated manual merchant product
+PATCH /api/products/{product_id}
+DELETE /api/products/{product_id}  # archive/deactivate
 ```
 
 ### Cart
@@ -252,7 +273,7 @@ $env:PYTHONPATH = "."
 pytest -q backend/tests
 ```
 
-Expected current result: 19 passing tests.
+Expected current result: 22 passing tests.
 
 Frontend production build:
 
@@ -319,3 +340,5 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/demo/reset
 - Payment signatures are verified server-side.
 - Payment verification is idempotent and inventory cannot be decremented twice.
 - Raw backend exceptions are converted to structured generic errors.
+- Shopping-domain guardrails redirect greetings, coding requests, and prompt-injection attempts instead of answering unrelated questions.
+- DummyJSON and Bright Data credentials are never exposed to the frontend.

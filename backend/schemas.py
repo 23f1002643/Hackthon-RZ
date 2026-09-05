@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 class ShopSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
+    context: list[str] = Field(default_factory=list, max_length=8)
 
 
 class CreateCartRequest(BaseModel):
@@ -52,6 +53,10 @@ class ProductIn(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=30)
     occasion: list[str] = Field(default_factory=list, max_length=20)
     gender: str = Field(default="unisex", max_length=16)
+    color: str = Field(default="", max_length=64)
+    material: str = Field(default="", max_length=96)
+    style: str = Field(default="", max_length=96)
+    season: str = Field(default="", max_length=64)
     source_url: str = Field(default="", max_length=2000)
     active: bool = True
 
