@@ -1,6 +1,6 @@
 # Vastra Studio AI Commerce
 
-Vastra Studio is a production-shaped AI commerce application for the Razorpay AI Buildathon. A shopper describes an intent in natural language, the system searches one local catalog assembled from DummyJSON, optional Bright Data imports, seeded products, and manual merchant products, proposes contextual budget-aware add-ons, creates a server-authoritative cart, and starts Razorpay Test Mode Checkout.
+Vastra Studio is a production-shaped AI commerce application for the Razorpay AI Buildathon. A shopper describes an intent in natural language, the system uses LangGraph plus the NVIDIA reasoning boundary to interpret the prompt, searches one local catalog assembled from DummyJSON, optional Bright Data imports, seeded products, and manual merchant products, proposes contextual budget-aware add-ons, creates a server-authoritative cart only after explicit Add to cart, and starts Razorpay Test Mode Checkout.
 
 ## Product routes
 
@@ -41,6 +41,7 @@ flowchart LR
 - **Frontend:** user experience, route state, loading states, and Razorpay Checkout launch.
 - **FastAPI:** structured API responses, request validation, orchestration, and error translation.
 - **Catalog service:** deterministic database filtering and relevance ranking.
+- **Prompt-driven retrieval:** the LLM extracts category, occasion, budget, recipient, preferences, and constraints; deterministic local ranking then validates and orders candidates before the LLM explains the result. The system does not depend on one exact product keyword or one fixed demo journey.
 - **Catalog sources:** DummyJSON is the primary optional baseline importer; Bright Data is an optional backend-only source; manual products are merchant-owned rows. All are persisted locally before retrieval.
 - **Agent/LLM layer:** intent parsing, candidate ranking, recommendation explanations, and fallback behavior only.
 - **Cart/order services:** authoritative prices, totals, inventory checks, order state, and idempotency.
@@ -161,7 +162,7 @@ Useful direct URLs:
 
 1. Open `/shop`.
 2. Submit: `I need something for my sister's wedding under ₹4000`.
-3. Confirm the recommended catalog product.
+3. Review the recommendation explanation, then explicitly click `Add to cart`.
 4. Add the related upsell only if it remains within budget.
 5. Confirm the cart. The server recalculates the amount and creates a Razorpay order.
 6. Complete Razorpay Test Mode Checkout.
@@ -169,6 +170,8 @@ Useful direct URLs:
 8. Open `/dashboard` and inspect verified revenue, notifications, inventory/order events, and the audit trail.
 
 If Razorpay keys are not configured, discovery, catalog, cart, policy, and offline tests still work, but real Checkout cannot start.
+
+The buyer uses a versioned demo cart key (`vastra-demo-cart-id-v2`). Older prototype carts are intentionally not restored, so a stale prefilled product cannot silently reappear in a new session.
 
 ## Bright Data catalog ingestion
 
@@ -211,7 +214,7 @@ GET  /api/config
 GET  /api/products?q=&category=&occasion=&limit=24
 GET  /api/products/{product_id}
 GET  /api/categories
-POST /api/shop/search          {"query":"..."}
+POST /api/shop/search          {"query":"...","context":["recent shopper/assistant turns"]}
 POST /api/catalog/import?source=dummyjson
 POST /api/catalog/import?source=brightdata
 POST /api/products             # validated manual merchant product
@@ -230,7 +233,7 @@ DELETE /api/cart/{cart_id}/items/{item_id}
 POST   /api/cart/{cart_id}/clear
 ```
 
-The client sends product ids and quantities only. Cart prices and totals come from the database.
+The client sends product ids and quantities only. Cart prices and totals come from the database. Products are never automatically inserted merely because a search returned a recommendation.
 The buyer stores the demo customer id and active cart id locally so a refresh reconnects to the same server-side session.
 
 ### Orders and payments
@@ -273,7 +276,7 @@ $env:PYTHONPATH = "."
 pytest -q backend/tests
 ```
 
-Expected current result: 22 passing tests.
+Expected current result: 25 passing tests.
 
 Frontend production build:
 
@@ -341,4 +344,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/demo/reset
 - Payment verification is idempotent and inventory cannot be decremented twice.
 - Raw backend exceptions are converted to structured generic errors.
 - Shopping-domain guardrails redirect greetings, coding requests, and prompt-injection attempts instead of answering unrelated questions.
+- Every seller turn has a validated NVIDIA-generated response when available and a query-aware deterministic fallback when it is not; random input never produces a product recommendation.
+- Product/catalog availability questions such as `What products do you have?` and category variants such as `watchs` enter fashion catalog retrieval.
+- Missing product images are backfilled through `POST /api/admin/fix-images` and render a neutral placeholder if a URL later fails.
 - DummyJSON and Bright Data credentials are never exposed to the frontend.

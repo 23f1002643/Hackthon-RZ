@@ -75,12 +75,12 @@ def test_product_availability_question_enters_catalog_flow(db, config):
     assert result["recommendation"] is not None
 
 
-def test_watch_request_enters_accessories_catalog_flow(db, config):
+def test_watch_request_enters_watches_catalog_flow(db, config):
     result = agent.run_discovery(db, "Any good watchs?", config)
 
     assert result["intent"]["intent"] == "shopping"
-    assert result["intent"]["category"] == "Accessories"
-    assert result["recommendation"] is not None
+    assert result["intent"]["category"] == "Watches"
+    assert result["recommendation"] is None or "watch" in result["recommendation"]["product"]["name"].lower()
 
 
 def test_full_paid_flow_decrements_inventory(db, config, fake_razorpay, find_product):

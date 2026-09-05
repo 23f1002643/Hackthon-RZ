@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import String, or_, select
 from sqlalchemy.orm import Session
 
 from .models import DEMO_MERCHANT_ID, Product, ProductRelation
 
 FASHION_CATEGORIES = {
-    "Sarees", "Kurtas", "Dupattas", "Jewellery", "Bags", "Accessories",
+    "Sarees", "Kurtas", "Dupattas", "Jewellery", "Bags", "Accessories", "Watches",
     "Gifts", "Footwear", "Dresses", "Shirts", "Trousers", "Lehengas",
     "Festive Wear", "Casual Wear", "Tops",
 }
@@ -80,7 +80,15 @@ def search_products(
     stmt = select(Product).where(Product.merchant_id == merchant_id, Product.active.is_(True))
 
     if category:
-        stmt = stmt.where(Product.category == category)
+        if category == "Watches":
+            stmt = stmt.where(Product.category == "Accessories").where(
+                or_(
+                    Product.name.ilike("%watch%"),
+                    Product.tags.cast(String).ilike("%watch%"),
+                )
+            )
+        else:
+            stmt = stmt.where(Product.category == category)
     if min_price is not None:
         stmt = stmt.where(Product.price >= int(min_price))
     if max_price is not None:

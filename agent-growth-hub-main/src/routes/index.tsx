@@ -42,6 +42,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { createProduct, fetchAuditLogs, fetchChartData, fetchConfig, fetchCustomers, fetchMetrics, fetchNotifications, fetchOrders, fetchProducts, importCatalog, searchShop, toggleAgent } from "@/lib/api";
 import { toast } from "sonner";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -405,6 +406,7 @@ export function Dashboard() {
               <Search />
             </Button>
             <div className="relative">
+              <ThemeToggle />
               <Button variant="ghost" size="icon" className="relative text-muted-foreground" onClick={() => setShowNotifs((open) => !open)}>
                 <Bell />
                 {notifications.length > 0 && <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary live-dot" />}

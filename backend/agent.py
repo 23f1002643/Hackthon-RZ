@@ -31,6 +31,7 @@ class ShopState(TypedDict, total=False):
     recommendation: Optional[Dict[str, Any]]
     upsell: Optional[Dict[str, Any]]
     upsell_options: List[Dict[str, Any]]
+    no_results_message: str
     steps: List[Dict[str, str]]
 
 
@@ -48,6 +49,15 @@ def node_parse_intent(state: ShopState) -> Dict[str, Any]:
         intent = {"intent": message_type, "source": "deterministic", "preferences": [], "constraints": []}
         return {"intent": intent, "steps": steps}
     intent = llm.parse_intent(query)
+    context_list = state.get("context", [])
+    if context_list:
+        ctx = llm.extract_context_intent(context_list)
+        if not intent.get("category") and ctx.get("category"):
+            intent["category"] = ctx["category"]
+        if not intent.get("occasion") and ctx.get("occasion"):
+            intent["occasion"] = ctx["occasion"]
+        if ctx.get("affordability_requested") and not intent.get("budget"):
+            intent["budget"] = 5000
     record_event(
         state["db"],
         event_type=EventType.INTENT_PARSED,
@@ -113,8 +123,23 @@ def node_recommend(state: ShopState) -> Dict[str, Any]:
     candidates = state.get("candidates", [])
     steps = state.get("steps", []) + [{"key": "match", "label": "Finding your best match", "status": "done"}]
 
-    if intent.get("intent") != "shopping" or not candidates:
+    if intent.get("intent") != "shopping":
         return {"recommendation": None, "upsell": None, "upsell_options": [], "steps": steps}
+    if not candidates:
+        category = intent.get("category") or "items"
+        budget = intent.get("budget")
+        if budget:
+            no_msg = (
+                f"We don't carry {category} under ₹{budget:,} right now — "
+                f"our {category.lower()} start from higher price points. "
+                "Want me to show what's available, or suggest something else in your budget?"
+            )
+        else:
+            no_msg = (
+                f"I couldn't find {category} in our current catalog. "
+                "Try a different category or tell me your budget and occasion — I'll find the best match."
+            )
+        return {"recommendation": None, "upsell": None, "upsell_options": [], "steps": steps, "no_results_message": no_msg}
 
     budget = intent.get("budget")
     upsell_candidates = _upsell_pool(db, candidates, config, budget)
@@ -247,7 +272,10 @@ def run_discovery(db: Session, query: str, config: MerchantConfig, context: Opti
     message_type = intent.get("intent", "unclear")
     response = llm.seller_response(query, message_type) if message_type in {"greeting", "unclear"} else None
     if response is None and not final.get("candidates"):
-        response = "I couldn't find a close match in the Vastra Studio catalog right now. Try another fashion category, occasion, color, or budget."
+        response = final.get("no_results_message") or (
+            "I couldn't find a close match right now. Try a different category, adjust your budget, "
+            "or tell me the occasion and I'll suggest the best fit."
+        )
     return {
         "intent": {k: intent.get(k) for k in ("intent", "occasion", "recipient", "category", "budget", "gender", "preferences", "constraints")},
         "products": final.get("candidates", []),

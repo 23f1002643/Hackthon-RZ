@@ -4,6 +4,7 @@ import { ArrowRight, Check, ShoppingBag, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { addCartItem, createCart, createOrder, fetchCustomerOrders, getCart, getOrCreateCustomer, markPaymentFailed, removeCartItem, searchShop, verifyPayment } from "@/lib/api";
 import { toast } from "sonner";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export const Route = createFileRoute("/shop")({ component: Shop });
 
@@ -164,7 +165,8 @@ function Shop() {
   return (
     <main className="min-h-screen bg-background text-foreground">
       <section className="border-b border-border bg-[radial-gradient(circle_at_top_right,oklch(0.35_0.12_300/.45),transparent_45%),radial-gradient(circle_at_top_left,oklch(0.3_0.12_265/.35),transparent_40%)] px-5 py-16 lg:px-16">
-        <div className="mx-auto max-w-6xl">
+        <div className="relative mx-auto max-w-6xl">
+          <div className="absolute right-5 top-5 lg:right-16 lg:top-5"><ThemeToggle /></div>
           <div className="flex items-center gap-2 text-sm font-medium text-primary"><Sparkles className="size-4" /> Vastra Studio AI Commerce</div>
           <h1 className="mt-5 max-w-3xl text-4xl font-semibold tracking-tight lg:text-6xl">Tell us what you are looking for.</h1>
           <p className="mt-4 max-w-2xl text-base text-muted-foreground">A real merchant catalog, bounded recommendations, and a secure checkout when you are ready.</p>

@@ -131,7 +131,8 @@ _CATEGORY_KEYWORDS = {
     "Dupattas": ["dupatta", "stole"],
     "Jewellery": ["jewellery", "jewelry", "earring", "necklace", "choker", "bangle", "jhumka"],
     "Bags": ["bag", "potli", "clutch", "handbag"],
-    "Accessories": ["wallet", "belt", "accessory", "accessories", "watch", "watches", "watchs", "timepiece"],
+    "Watches": ["watch", "watches", "watchs", "wristwatch", "wrist watch", "timepiece", "ghadi", "घड़ी"],
+    "Accessories": ["wallet", "belt", "accessory", "accessories", "sunglass", "sunglasses", "glasses", "potli", "clutch"],
     "Gifts": ["gift box", "hamper"],
     "Footwear": ["juttis", "jutti", "shoes", "footwear", "mojari", "sandals"],
     "Dresses": ["dress", "dresses", "gown", "maxi"],
@@ -215,7 +216,7 @@ def parse_intent(query: str) -> Dict[str, Any]:
         '{"intent":"shopping","occasion":null,"recipient":null,"category":null,'
         '"budget":null,"gender":null,"preferences":[],"constraints":[]}\n'
         "Rules: occasion in [wedding,festive,party,office,casual,gifting] or null. "
-        "category in [Sarees,Kurtas,Dupattas,Jewellery,Bags,Accessories,Gifts,Footwear,Dresses,Shirts,Trousers,Lehengas,Tops] or null. "
+        "category in [Sarees,Kurtas,Dupattas,Jewellery,Bags,Accessories,Watches,Gifts,Footwear,Dresses,Shirts,Trousers,Lehengas,Tops] or null. "
         "gender in [women,men] or null. budget is an integer in rupees or null. "
         "preferences/constraints are short strings."
     )
@@ -354,3 +355,23 @@ def generate_recommendation(
         "upsell_reason": upsell_reason or ("Pairs beautifully with your selection." if upsell_id else ""),
         "source": "llm",
     }
+
+
+def extract_context_intent(context: list) -> dict:
+    """Extract category/occasion/budget hints from conversation history."""
+    if not context:
+        return {}
+    combined = " ".join(str(c) for c in context[-6:]).lower()
+    carried = {}
+    for cat, kws in _CATEGORY_KEYWORDS.items():
+        if any(k in combined for k in kws):
+            carried["category"] = cat
+            break
+    for occ, kws in _OCCASION_KEYWORDS.items():
+        if any(k in combined for k in kws):
+            carried["occasion"] = occ
+            break
+    affordability = ["affordable", "cheaper", "lower price", "budget", "less expensive", "kam price", "sasta", "under", "below", "kam mein"]
+    if any(s in combined for s in affordability):
+        carried["affordability_requested"] = True
+    return carried
