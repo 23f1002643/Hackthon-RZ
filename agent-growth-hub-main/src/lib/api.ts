@@ -75,6 +75,14 @@ export async function removeCartItem(cartId: number, itemId: number) {
   return request(`/api/cart/${cartId}/items/${itemId}`, { method: 'DELETE' });
 }
 
+export async function updateCartItem(cartId: number, itemId: number, quantity: number) {
+  return request(`/api/cart/${cartId}/items/${itemId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quantity }),
+  });
+}
+
 export async function createOrder(cartId: number, confirmed: boolean) {
   return request('/api/orders/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cart_id: cartId, confirmed }) });
 }
